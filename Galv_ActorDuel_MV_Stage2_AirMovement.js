@@ -39,12 +39,8 @@
     var JUMP_KEY = Number(params['Jump Key'] || 32);
     var AIR_SPEED_MULTIPLIER = Number(params['Air Speed Multiplier'] || 1.0);
 
-    // Space becomes a dedicated duel jump input instead of MV's generic OK.
     Input.keyMapper[JUMP_KEY] = 'duelJump';
 
-    // -------------------------------------------------------------
-    // Shared aerial movement method
-    // -------------------------------------------------------------
     Game_Actor.prototype.duelAirMove = function(direction) {
         if (this._duelDead) return;
         if (!this._duelJumping) return;
@@ -55,55 +51,44 @@
         var speed = Number(this._duelSpeed || 4) * AIR_SPEED_MULTIPLIER;
         this._duelX += direction * speed;
 
-        // Keep the fighter inside the same arena boundaries as the duel.
         var minX = 40;
         var maxX = Graphics.boxWidth - 40;
         if (this._duelX < minX) this._duelX = minX;
         if (this._duelX > maxX) this._duelX = maxX;
     };
 
-    // -------------------------------------------------------------
-    // P1 controls
-    // -------------------------------------------------------------
     Scene_ActorDuel.prototype._updatePlayer1 = function() {
         var actor = this._actor1;
         if (!actor || actor._duelDead) return;
 
-        // Space starts the jump. Up is deliberately ignored here.
         if (Input.isTriggered('duelJump')) {
             actor.duelJump();
         }
 
-        // Ground guard only. Airborne fighters are free to move.
         if (!actor._duelJumping && Input.isPressed('down')) {
             actor.duelStartGuard(true);
         } else {
             actor.duelStartGuard(false);
         }
 
-        // Ground movement.
         if (!actor._duelJumping && actor.duelCanMove()) {
             if (Input.isPressed('left')) actor.duelMove(-1);
             else if (Input.isPressed('right')) actor.duelMove(1);
         }
 
-        // Air movement: held Left/Right acts like a horizontal air velocity.
         if (actor._duelJumping) {
             if (Input.isPressed('left')) actor.duelAirMove(-1);
             else if (Input.isPressed('right')) actor.duelAirMove(1);
         }
 
-        // Z remains the normal attack button.
         if (Input.isTriggered('ok')) actor.duelStartAttack();
     };
 
-    // -------------------------------------------------------------
-    // P2 controls, if 2-player mode is used.
-    // R remains the P2 jump button for compatibility.
-    // -------------------------------------------------------------
     Scene_ActorDuel.prototype._updatePlayer2 = function() {
-        var data = duelSystem();
-        if (data.mode !== 1) return;
+        // duelSystem() is private to the main plugin IIFE, so it cannot be
+        // referenced from this separate plugin. Read the public game state.
+        var data = $gameSystem && $gameSystem.actorDuel;
+        if (!data || data.mode !== 1) return;
 
         var actor = this._actor2;
         if (!actor || actor._duelDead) return;
