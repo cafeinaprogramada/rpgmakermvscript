@@ -1,5 +1,5 @@
 /*:
- * @plugindesc Galv Actor Duel MV - Multi-Skill System with directional X skills, hitboxes and AI
+ * @plugindesc Galv Actor Duel MV - Multi-Skill System with directional X skills, hitboxes, knockback and AI
  * @author OpenAI / based on Galv's Actor Duel Mini Game v1.5
  *
  * @help
@@ -14,11 +14,12 @@
  *
  * Skill notetags:
  *   <fcost: 100>
- *   <fhitbox: 80,40,60>
+ *   <fhitbox: 80,40,60,30>
  *
- * fhitbox = width, height, distance from the actor.
+ * fhitbox = width, height, distance, knockback.
  * The distance is measured forward from the fighter. Facing is handled
- * automatically. The third value may be omitted and defaults to 0.
+ * automatically. The third and fourth values may be omitted and default to 0.
+ * Knockback is horizontal force applied away from the attacker.
  *
  * AI skill notetags:
  *   <ai_priority: 80>
@@ -117,7 +118,8 @@
         return {
             width: Math.max(1, values[0]),
             height: Math.max(1, values[1]),
-            distance: Math.max(0, values.length >= 3 ? values[2] : 0)
+            distance: Math.max(0, values.length >= 3 ? values[2] : 0),
+            knockback: Math.max(0, values.length >= 4 ? values[3] : 0)
         };
     }
 
@@ -170,8 +172,6 @@
         var box = skillHitbox(skill);
 
         // A skill without <fhitbox> keeps the old behavior: it hits directly.
-        // This preserves compatibility with skills that have not been given
-        // collision data yet.
         if (!box) return true;
         if (!attacker || !target) return false;
 
@@ -184,8 +184,6 @@
         var targetX = Number(target._duelX || 0);
         var targetY = Number(target._duelY || 0);
 
-        // Fighter position is treated as the bottom-center of the sprite.
-        // The hitbox is centered vertically on the actor's duel position.
         var centerX = attackerX + facing * (box.distance + box.width / 2);
         var centerY = attackerY - box.height / 2;
 
@@ -194,8 +192,6 @@
         var top = centerY - box.height / 2;
         var bottom = centerY + box.height / 2;
 
-        // Target is represented by a small rectangular body around its
-        // bottom-center duel position. This avoids requiring sprite dimensions.
         var targetHalfWidth = 20;
         var targetHeight = 80;
         var targetLeft = targetX - targetHalfWidth;
@@ -207,6 +203,25 @@
                left <= targetRight &&
                bottom >= targetTop &&
                top <= targetBottom;
+    }
+
+    // ---------------------------------------------------------------------
+    // Knockback
+    // ---------------------------------------------------------------------
+    function applySkillKnockback(attacker, target, skill) {
+        var box = skillHitbox(skill);
+        if (!box || box.knockback <= 0 || !attacker || !target) return;
+
+        var facing = Number(attacker._duelFacing || 1);
+        facing = facing >= 0 ? 1 : -1;
+
+        // Apply force away from the attacker. The base duel movement system
+        // will continue handling clamping and normal movement afterward.
+        target._duelX += facing * box.knockback;
+
+        if (typeof target.duelClamp === 'function') {
+            target.duelClamp();
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -259,10 +274,9 @@
         this._duelLastSkillId = skillId;
         this._duelPose = SKILL_POSE;
 
-        // The animation still plays exactly as before. Damage now depends on
-        // the skill's hitbox, if one was configured.
         playSkillAnimation(this, target, skill);
 
+        // A configured hitbox determines whether the skill connects.
         if (!skillHitboxHits(this, target, skill)) {
             return true;
         }
@@ -276,6 +290,9 @@
         }
         if (damage < 0) damage = 0;
         target.duelTakeDamage(damage, this);
+
+        // Knockback is only applied after a successful hit.
+        applySkillKnockback(this, target, skill);
         return true;
     };
 
