@@ -1,5 +1,5 @@
 /*:
- * @plugindesc Galv Actor Duel MV - Fighting AI Decision Engine (MUGEN-style weighted decisions) v2
+ * @plugindesc Galv Actor Duel MV - Fighting AI Decision Engine (MUGEN-style weighted decisions) v2.1
  * @author OpenAI / based on Galv's Actor Duel Mini Game v1.5
  *
  * @help
@@ -24,22 +24,11 @@
  *   <fai_air_approach: 70>
  *   <fai_air_retreat: 30>
  *
- * Quanto maior o valor, maior a tendência daquele comportamento.
- * Os parâmetros não são comandos absolutos: primeiro são avaliadas as
- * condições da situação e somente depois os pesos entram no sorteio.
+ * O salto usa duelJump() do sistema principal. Durante o salto, o movimento
+ * horizontal usa o mesmo _duelSpeed diretamente, porque duelMove() do núcleo
+ * bloqueia movimento enquanto _duelJumping=true.
  *
- * O movimento é contínuo. A IA mantém uma direção entre decisões, como se
- * estivesse segurando a tecla, evitando o efeito de pequenos cliques.
- *
- * O salto usa o mesmo duelJump() do sistema principal. Durante o salto,
- * esquerda/direita continuam funcionando, permitindo salto diagonal.
- *
- * Skills continuam usando as informações do Stage2 MultiSkills:
- *   <fskills: 2,3,4,5>
- *   <fhitbox: 80,40,60,30>
- *   <fcost: 100>
- *   <ai_priority: 80>
- *   <ai_range: 250>
+ * Skills continuam usando as informações do Stage2 MultiSkills.
  */
 (function() {
     'use strict';
@@ -106,10 +95,6 @@
         return items[items.length - 1].action;
     }
 
-    // ---------------------------------------------------------------------
-    // Hitbox / skill helpers. We deliberately read the existing MultiSkills
-    // notetags instead of creating a second combat system.
-    // ---------------------------------------------------------------------
     function noteValue(note, tag, fallback) {
         var regex = new RegExp('<' + tag + ':\\s*([^>]+)>', 'i');
         var m = String(note || '').match(regex);
@@ -192,19 +177,6 @@
         return Math.max(1, Number(data && data.range || 45));
     }
 
-    function maxRelevantReach(actor) {
-        var reach = basicAttackReach(actor);
-        configuredSkills(actor).forEach(function(id) {
-            var skill = $dataSkills[id];
-            reach = Math.max(reach, skillRange(skill));
-        });
-        return reach;
-    }
-
-    // ---------------------------------------------------------------------
-    // Continuous movement: the AI commits to a direction for a short period
-    // instead of deciding every few frames whether to press the key again.
-    // ---------------------------------------------------------------------
     function ensureState(ai) {
         if (ai._movementDirection === undefined) ai._movementDirection = 0;
         if (ai._movementTimer === undefined) ai._movementTimer = 0;
@@ -232,16 +204,28 @@
         ai._movementTimer = 0;
     }
 
-    // ---------------------------------------------------------------------
-    // Air movement / diagonal jumps
-    // ---------------------------------------------------------------------
+    // IMPORTANT: duelMove() intentionally refuses to move while jumping.
+    // This helper is the aerial equivalent and preserves the same speed.
+    function duelAirMove(actor, direction) {
+        if (!actor || actor._duelDead || !actor._duelJumping) return;
+        if (actor._duelHitTimer > 0 || actor._duelAttackTimer > 0) return;
+        if (actor._duelGuarding) return;
+
+        var speed = Number(actor._duelSpeed || 4);
+        actor._duelX += direction * speed;
+
+        // Same practical arena boundaries used by the duel scene.
+        var minX = 40;
+        var maxX = Math.max(minX, Graphics.width - 40);
+        if (actor._duelX < minX) actor._duelX = minX;
+        if (actor._duelX > maxX) actor._duelX = maxX;
+    }
+
     function tryAirMovement(ai, data, directionToOpponent, distance) {
         var actor = ai.actor;
         if (!actor._duelJumping) return false;
         if (actor._duelHitTimer > 0 || actor._duelAttackTimer > 0) return false;
 
-        // During a jump, horizontal movement remains active every frame.
-        // This produces the equivalent of holding Left/Right while jumping.
         var airDirection = directionToOpponent;
         if (Math.random() * 100 < data.airRetreat && distance < basicAttackReach(actor) * 1.15) {
             airDirection = -directionToOpponent;
@@ -249,7 +233,7 @@
         if (Math.random() * 100 < data.airApproach && distance > basicAttackReach(actor)) {
             airDirection = directionToOpponent;
         }
-        actor.duelMove(airDirection);
+        duelAirMove(actor, airDirection);
         return true;
     }
 
@@ -259,9 +243,6 @@
                actor._duelAttackTimer <= 0 && !actor._duelGuarding;
     }
 
-    // ---------------------------------------------------------------------
-    // Decision engine
-    // ---------------------------------------------------------------------
     function ActorDuelAI(actor, opponent) {
         this.actor = actor;
         this.opponent = opponent;
@@ -294,25 +275,20 @@
         var direction = delta >= 0 ? 1 : -1;
         actor._duelFacing = direction;
 
-        // Continuous horizontal movement during a jump.
         if (actor._duelJumping) {
             tryAirMovement(this, data, direction, distance);
             return;
         }
 
-        // Hit/attack states have priority over AI decisions.
         if (actor._duelHitTimer > 0 || actor._duelAttackTimer > 0) {
             clearMovement(this);
             return;
         }
 
-        // Keep holding the chosen movement direction until its commitment
-        // expires. This is what restores smooth keyboard-like movement.
         if (this._movementTimer > 0 && this._movementDirection !== 0) {
             continueMovement(this);
         }
 
-        // A higher reaction value means shorter decision intervals.
         if (this._decisionTimer > 0) return;
         var reactionFactor = data.reaction / 100;
         var interval = Math.max(
@@ -335,7 +311,6 @@
 
         var choices = [];
 
-        // GUARD: only meaningful when a threat is present or the enemy is close.
         if (threat && (inBasicRange || veryClose)) {
             choices.push({
                 action: 'guard',
@@ -343,7 +318,6 @@
             });
         }
 
-        // SKILL: only if a real configured skill can currently be used.
         if (usableSkill && inSkillRange) {
             var skillWeight = data.skill * (skillPriority(usableSkill) / 50);
             if (distance > basicReach) skillWeight *= 1.25;
@@ -351,7 +325,6 @@
             choices.push({ action: 'skill', weight: clamp100(skillWeight) });
         }
 
-        // BASIC ATTACK: only if its actual normal range is reached.
         if (inBasicRange) {
             var attackWeight = data.aggression;
             if (opponent._duelHitTimer > 0) attackWeight *= 1.25;
@@ -359,7 +332,6 @@
             choices.push({ action: 'attack', weight: clamp100(attackWeight) });
         }
 
-        // RETREAT: stronger when too close, threatened or low HP.
         if (veryClose || threat || lowHp) {
             var retreatWeight = data.retreat;
             if (veryClose) retreatWeight *= 1.35;
@@ -368,7 +340,6 @@
             choices.push({ action: 'retreat', weight: clamp100(retreatWeight) });
         }
 
-        // JUMP: controlled approach/escape tool, not a constant action.
         if (canJump(actor) && this._jumpCooldown <= 0) {
             var jumpWeight = data.jump;
             if (tooFar) jumpWeight *= 1.55;
@@ -377,14 +348,12 @@
             choices.push({ action: 'jump', weight: clamp100(jumpWeight) });
         }
 
-        // APPROACH: the default when no attack/skill can reach.
         if (tooFar) {
             var approachWeight = data.movement;
             if (distance > preferredReach * 1.75) approachWeight *= 1.35;
             choices.push({ action: 'approach', weight: clamp100(approachWeight) });
         }
 
-        // SPACING / WAIT: prevents constant movement and creates breathing room.
         var spacingWeight = Math.max(1, 100 - data.movement);
         if (distance > preferredReach * 0.75 && distance < preferredReach * 1.15) {
             spacingWeight += data.spacing * 0.5;
@@ -397,9 +366,7 @@
 
     ActorDuelAI.prototype.execute = function(action, direction, distance, preferredReach) {
         var actor = this.actor;
-        var opponent = this.opponent;
         var data = aiData(actor);
-
         if (!action) return;
 
         if (action === 'guard') {
@@ -431,8 +398,6 @@
             actor.duelJump();
             this._jumpCooldown = CFG.jumpCooldown;
             this._airDecisionTimer = Math.max(8, Math.round(20 * (1 - data.air / 100)));
-            // Choose approach/retreat after takeoff. Horizontal movement is
-            // applied every frame by update(), so this becomes a true diagonal jump.
             return;
         }
 
@@ -450,17 +415,12 @@
             return;
         }
 
-        // WAIT: stop movement, but keep facing the opponent.
         if (action === 'wait') {
             clearMovement(this);
             actor.duelStartGuard(false);
         }
     };
 
-    // ---------------------------------------------------------------------
-    // Replace the original AI instance with the new engine when the scene
-    // creates the CPU fighter. Player vs Player remains untouched.
-    // ---------------------------------------------------------------------
     var _Scene_ActorDuel_createActors = Scene_ActorDuel.prototype._createActors;
     Scene_ActorDuel.prototype._createActors = function() {
         _Scene_ActorDuel_createActors.call(this);
@@ -473,12 +433,6 @@
         }
     };
 
-    // ---------------------------------------------------------------------
-    // Player diagonal jump support.
-    // The base duelJump() already handles vertical physics; this wrapper
-    // remembers the held horizontal direction and the scene update keeps
-    // moving while airborne. Existing ground controls remain unchanged.
-    // ---------------------------------------------------------------------
     var _Scene_ActorDuel_updateFight = Scene_ActorDuel.prototype._updateFight;
     Scene_ActorDuel.prototype._updateFight = function() {
         if (_Scene_ActorDuel_updateFight) {
@@ -493,7 +447,7 @@
         if (Input.isPressed('left')) horizontal = -1;
         if (Input.isPressed('right')) horizontal = 1;
         if (horizontal !== 0) {
-            actor.duelMove(horizontal);
+            duelAirMove(actor, horizontal);
         }
     };
 
