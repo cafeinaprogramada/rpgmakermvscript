@@ -13,9 +13,9 @@
  * Register:
  * ActorDuel add_skill 1 2 r
  *
- * IMPORTANT: RPG Maker MV database skills are plain database objects here;
- * this plugin deliberately does not use RPG.Skill, which is not available
- * in the MV runtime.
+ * TESTE VISUAL STAGE 2:
+ * O projétil usa uma representação grande e colorida temporária.
+ * A colisão ainda está desativada neste teste.
  */
 (function() {
     'use strict';
@@ -175,21 +175,31 @@
         this._pattern = 0;
         this._animTimer = 0;
         this._speed = Number(data.speed) || CFG.speed;
-        this._lifetime = Number(data.lifetime) || CFG.life;
+        this._lifetime = Math.max(90, Number(data.lifetime) || CFG.life);
         this._reach = Number(data.reach) || CFG.reach;
-        this.x = owner._duelX;
-        this.y = owner._duelY - 60;
-        this.anchor.set(0.5, 0.5);
+        this._testVisual = true;
+
+        // Nasce claramente à frente do dono, e não em cima dele.
         this._direction = this._target && this._target._duelX >= owner._duelX ? 1 : -1;
+        this.x = owner._duelX + (this._direction * 55);
+        this.y = owner._duelY - 70;
+        this.anchor.set(0.5, 0.5);
         this.scale.x = this._direction;
+
         this._load();
     };
 
     ActorDuelProjectile.prototype._load = function() {
-        this._fallback = new Bitmap(64, 40);
-        this._fallback.fillRect(8, 8, 48, 24);
-        this._fallback.fillRect(20, 2, 24, 36);
+        // Fallback deliberadamente enorme para o teste visual.
+        this._fallback = new Bitmap(100, 100);
+        this._fallback.fillRect(12, 38, 76, 24);
+        this._fallback.fillRect(38, 12, 24, 76);
+        this._fallback.fillRect(25, 25, 50, 50);
+        this._fallback.fillRect(5, 47, 90, 6);
         this.bitmap = this._fallback;
+        this._fallbackReady = true;
+
+        // Tentamos carregar FightSkills, mas o teste não depende dele.
         this._sheetReady = false;
         this._sheet = ImageManager.loadBitmap('img/battlers/', CFG.image, 0, true);
         this._sheet.addLoadListener(this._sheetLoaded.bind(this));
@@ -216,39 +226,25 @@
     ActorDuelProjectile.prototype.update = function() {
         Sprite.prototype.update.call(this);
         if (this.finished()) return;
+
         this._life++;
         this._animTimer++;
+
+        // Durante o teste, o fallback permanece grande e animado.
         if (this._sheetReady && this._animTimer >= 7) {
             this._animTimer = 0;
             this._pattern = (this._pattern + 1) % CFG.cols;
             this._setFrame();
         }
-        this.x += this._speed * this._direction;
-        if (this._target && !this._target._duelDead) {
-            var dx = Math.abs(this._target._duelX - this.x);
-            var dy = Math.abs((this._target._duelY - 55) - this.y);
-            if (dx <= this._reach && dy <= this._reach + 45) {
-                this._hit = true;
-                this._applyHit();
-            }
-        }
-    };
 
-    ActorDuelProjectile.prototype._applyHit = function() {
-        if (!this._target || this._target._duelDead) return;
-        var action = new Game_Action(this._owner);
-        action.setSkill(this._skill.id);
-        var damage = action.makeDamageValue(this._target, false);
-        if (this._target._duelGuarding) {
-            var p = PluginManager.parameters('Galv_ActorDuel_MV');
-            damage = Math.floor(damage * Number(p['Guard Damage Rate'] || 0.25));
-        }
-        if (damage < 0) damage = 0;
-        this._target.duelTakeDamage(damage, this._owner);
+        this.x += this._speed * this._direction;
+
+        // TESTE VISUAL: não colide nem causa dano nesta etapa.
+        // Apenas percorre a arena e desaparece pelo tempo/limite da tela.
     };
 
     ActorDuelProjectile.prototype.finished = function() {
-        return this._hit || this._life >= this._lifetime || this.x < -100 || this.x > Graphics.width + 100;
+        return this._life >= this._lifetime || this.x < -120 || this.x > Graphics.width + 120;
     };
     ActorDuelProjectile.prototype.dispose = function() { this.bitmap = null; };
 
