@@ -1,14 +1,43 @@
 /*:
- * @plugindesc Galv Actor Duel MV - Stage 1 combat visuals (facing + hit FX)
+ * @plugindesc Galv Actor Duel MV - Stage 1 combat visuals (facing + hit FX + knockback)
  * @author OpenAI
+ *
+ * @param Hitbox Multiplier
+ * @type number
+ * @decimals 2
+ * @default 1.25
+ *
+ * @param Basic Knockback
+ * @type number
+ * @min 0
+ * @default 12
+ *
+ * @param Critical Knockback
+ * @type number
+ * @min 0
+ * @default 24
+ *
+ * @param Critical Damage Threshold
+ * @type number
+ * @min 0
+ * @default 50
+ *
  * @help
  * Load AFTER Galv_ActorDuel_MV.js and the Stage 1 HUD/Fix plugins.
  *
- * Stage 1 visual improvements:
+ * Stage 1 visual/gameplay improvements:
  * - Corrects fighter horizontal direction for Holder-style battler sheets.
- * - Adds a procedural impact flash/burst when HP is reduced.
- * - Adds a small screen flash and shake on a successful hit.
- * - Adds a stronger red impact when the hit is lethal.
+ * - Increases effective attack range by the Hitbox Multiplier.
+ * - Adds a larger procedural impact flash/burst when HP is reduced.
+ * - Adds screen flash and shake on successful hits.
+ * - Adds stronger impact on lethal hits.
+ * - Adds configurable basic/critical knockback based on final damage.
+ * - Knockback is still limited by the duel arena boundaries.
+ *
+ * Knockback:
+ *   Basic Knockback = default push distance.
+ *   Critical Knockback = push distance for damage at/above the threshold.
+ *   Critical Damage Threshold = final damage required for critical knockback.
  *
  * No extra image files are required.
  */
@@ -17,6 +46,45 @@
 
     if (typeof Scene_ActorDuel === 'undefined') return;
 
+    var pluginName = 'Galv_ActorDuel_MV_Stage1_CombatFX';
+    var params = PluginManager.parameters(pluginName);
+    var HITBOX_MULTIPLIER = Number(params['Hitbox Multiplier'] || 1.25);
+    var BASIC_KNOCKBACK = Number(params['Basic Knockback'] || 12);
+    var CRITICAL_KNOCKBACK = Number(params['Critical Knockback'] || 24);
+    var CRITICAL_DAMAGE_THRESHOLD = Number(params['Critical Damage Threshold'] || 50);
+
+    // -------------------------------------------------------------
+    // Increase the effective attack range without changing the combat core.
+    // -------------------------------------------------------------
+    if (Game_Actor.prototype.duelData) {
+        var _Game_Actor_duelData = Game_Actor.prototype.duelData;
+        Game_Actor.prototype.duelData = function() {
+            var data = _Game_Actor_duelData.call(this);
+            data.range = Math.max(1, Number(data.range || 45) * HITBOX_MULTIPLIER);
+            return data;
+        };
+    }
+
+    // -------------------------------------------------------------
+    // Configurable knockback.
+    // The core already creates knockback and arena limits are applied by
+    // Scene_ActorDuel after physics. We only replace the strength here.
+    // -------------------------------------------------------------
+    if (Game_Actor.prototype.duelTakeDamage) {
+        var _Game_Actor_duelTakeDamage = Game_Actor.prototype.duelTakeDamage;
+        Game_Actor.prototype.duelTakeDamage = function(damage, attacker) {
+            _Game_Actor_duelTakeDamage.call(this, damage, attacker);
+
+            if (!attacker || this._duelDead) return;
+
+            var amount = Number(damage) >= CRITICAL_DAMAGE_THRESHOLD ?
+                CRITICAL_KNOCKBACK : BASIC_KNOCKBACK;
+
+            var direction = this._duelX >= attacker._duelX ? 1 : -1;
+            this._duelKnockback = direction * Math.max(0, amount);
+        };
+    }
+
     // -------------------------------------------------------------
     // Impact FX sprite
     // -------------------------------------------------------------
@@ -24,14 +92,15 @@
         Sprite.call(this);
 
         this._age = 0;
-        this._maxAge = lethal ? 24 : 16;
+        this._maxAge = lethal ? 24 : 18;
         this._lethal = !!lethal;
         this._guarded = !!guarded;
         this.x = x;
         this.y = y;
         this.z = 20;
 
-        var size = lethal ? 110 : 80;
+        // Roughly 50% larger than the previous normal/critical FX.
+        var size = lethal ? 165 : 120;
         this.bitmap = new Bitmap(size, size);
         this.anchor.x = 0.5;
         this.anchor.y = 0.5;
@@ -51,22 +120,21 @@
         ctx.save();
         ctx.clearRect(0, 0, this._size, this._size);
 
-        // Central flash.
         var gradient = ctx.createRadialGradient(c, c, 2, c, c, c * 0.75);
         if (this._lethal) {
             gradient.addColorStop(0, 'rgba(255,255,255,1)');
-            gradient.addColorStop(0.18, 'rgba(255,80,80,0.95)');
-            gradient.addColorStop(0.55, 'rgba(255,0,0,0.45)');
+            gradient.addColorStop(0.18, 'rgba(255,80,80,0.98)');
+            gradient.addColorStop(0.55, 'rgba(255,0,0,0.5)');
             gradient.addColorStop(1, 'rgba(255,0,0,0)');
         } else if (this._guarded) {
             gradient.addColorStop(0, 'rgba(255,255,255,1)');
-            gradient.addColorStop(0.22, 'rgba(255,235,120,0.9)');
-            gradient.addColorStop(0.6, 'rgba(255,190,40,0.35)');
+            gradient.addColorStop(0.22, 'rgba(255,235,120,0.95)');
+            gradient.addColorStop(0.6, 'rgba(255,190,40,0.4)');
             gradient.addColorStop(1, 'rgba(255,180,0,0)');
         } else {
             gradient.addColorStop(0, 'rgba(255,255,255,1)');
-            gradient.addColorStop(0.2, 'rgba(255,245,190,0.95)');
-            gradient.addColorStop(0.58, 'rgba(255,150,40,0.42)');
+            gradient.addColorStop(0.2, 'rgba(255,245,190,0.98)');
+            gradient.addColorStop(0.58, 'rgba(255,150,40,0.46)');
             gradient.addColorStop(1, 'rgba(255,90,0,0)');
         }
 
@@ -75,15 +143,14 @@
         ctx.arc(c, c, c * 0.75, 0, Math.PI * 2);
         ctx.fill();
 
-        // Radial slash marks.
-        ctx.strokeStyle = this._lethal ? 'rgba(255,80,80,0.95)' : 'rgba(255,245,190,0.9)';
-        ctx.lineWidth = this._lethal ? 4 : 3;
+        ctx.strokeStyle = this._lethal ? 'rgba(255,80,80,0.98)' : 'rgba(255,245,190,0.94)';
+        ctx.lineWidth = this._lethal ? 6 : 4;
         ctx.lineCap = 'round';
 
-        for (var i = 0; i < 8; i++) {
-            var angle = (Math.PI * 2 / 8) * i;
-            var inner = c * 0.38;
-            var outer = c * 0.82;
+        for (var i = 0; i < 10; i++) {
+            var angle = (Math.PI * 2 / 10) * i;
+            var inner = c * 0.30;
+            var outer = c * 0.90;
             ctx.beginPath();
             ctx.moveTo(c + Math.cos(angle) * inner, c + Math.sin(angle) * inner);
             ctx.lineTo(c + Math.cos(angle) * outer, c + Math.sin(angle) * outer);
@@ -100,9 +167,9 @@
         this._age++;
         var t = this._age / this._maxAge;
 
-        this.scale.x = 0.35 + t * 1.15;
+        this.scale.x = 0.25 + t * 1.30;
         this.scale.y = this.scale.x;
-        this.rotation = (this._age % 2 === 0 ? 1 : -1) * t * 0.08;
+        this.rotation = (this._age % 2 === 0 ? 1 : -1) * t * 0.10;
         this.opacity = Math.max(0, 255 * (1 - t));
 
         if (this._age >= this._maxAge && this.parent) {
@@ -138,9 +205,8 @@
         );
 
         this._stage1FxLayer.addChild(fx);
-        this._stage1Shake = lethal ? 8 : 4;
+        this._stage1Shake = lethal ? 10 : 5;
 
-        // Short white screen flash without using the battleback itself.
         if (!this._stage1Flash) {
             this._stage1Flash = new Sprite(new Bitmap(Graphics.boxWidth, Graphics.boxHeight));
             this._stage1Flash.z = 30;
@@ -148,7 +214,7 @@
             this.addChild(this._stage1Flash);
         }
 
-        this._stage1Flash.opacity = lethal ? 150 : 85;
+        this._stage1Flash.opacity = lethal ? 165 : 95;
         this._stage1Flash.bitmap.clear();
         this._stage1Flash.bitmap.fillAll(lethal ? '#ffdddd' : '#ffffff');
     };
@@ -201,9 +267,6 @@
 
         if (this._finished) return;
 
-        // The original fighter sheets face the opposite direction from the
-        // duel convention, so invert the visual scale here. P1 faces right;
-        // P2 faces left when they are on their normal sides.
         if (this._sprite1 && this._actor1) {
             this._sprite1.scale.x = this._actor1._duelFacing >= 0 ? -2 : 2;
         }
