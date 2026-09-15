@@ -192,6 +192,8 @@
         var top = centerY - box.height / 2;
         var bottom = centerY + box.height / 2;
 
+        // The target has a simple collision body. The 20px half-width means
+        // the target can overlap the edge of the skill hitbox naturally.
         var targetHalfWidth = 20;
         var targetHeight = 80;
         var targetLeft = targetX - targetHalfWidth;
@@ -215,13 +217,11 @@
         var facing = Number(attacker._duelFacing || 1);
         facing = facing >= 0 ? 1 : -1;
 
-        // Apply force away from the attacker. The base duel movement system
-        // will continue handling clamping and normal movement afterward.
-        target._duelX += facing * box.knockback;
-
-        if (typeof target.duelClamp === 'function') {
-            target.duelClamp();
-        }
+        // The core duel system already has a knockback physics variable.
+        // We feed the skill's custom force into that system instead of moving
+        // _duelX directly. This prevents normal physics/AI movement from
+        // immediately cancelling the effect.
+        target._duelKnockback = facing * box.knockback;
     }
 
     // ---------------------------------------------------------------------
@@ -291,7 +291,8 @@
         if (damage < 0) damage = 0;
         target.duelTakeDamage(damage, this);
 
-        // Knockback is only applied after a successful hit.
+        // duelTakeDamage establishes the normal 8px knockback. Override it
+        // AFTER the damage call so the custom skill value is not overwritten.
         applySkillKnockback(this, target, skill);
         return true;
     };
