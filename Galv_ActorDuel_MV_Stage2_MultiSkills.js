@@ -1,5 +1,5 @@
 /*:
- * @plugindesc Galv Actor Duel MV - Multi-Skill System with directional X skills and AI
+ * @plugindesc Galv Actor Duel MV - Multi-Skill System with directional X skills, hitboxes and AI
  * @author OpenAI / based on Galv's Actor Duel Mini Game v1.5
  *
  * @help
@@ -12,15 +12,18 @@
  * Actor notetag:
  *   <fskills: 2,3,4,5>
  *
- * Skill AI notetags:
+ * Skill notetags:
+ *   <fcost: 100>
+ *   <fhitbox: 80,40,60>
+ *
+ * fhitbox = width, height, distance from the actor.
+ * The distance is measured forward from the fighter. Facing is handled
+ * automatically. The third value may be omitted and defaults to 0.
+ *
+ * AI skill notetags:
  *   <ai_priority: 80>
  *   <ai_range: 250>
  *   <ai_type: projectile>
- *
- * Plugin Manager parameters control global AI skill chance, decision interval,
- * minimum stamina, skill pose/duration, and skill cost source.
- *
- * Disable the older Stage2 skill/projectile test plugins while using this one.
  *
  * @param AI Skill Chance
  * @type number
@@ -73,13 +76,7 @@
     var SKILL_DURATION = Number(params['Skill Duration'] || 22);
     var COST_MODE = String(params['Skill Cost Mode'] || 'note');
 
-    // ---------------------------------------------------------------------
-    // INPUT FIX
-    // ---------------------------------------------------------------------
-    // RPG Maker MV does not create a custom "duelSkill" action by itself.
-    // The old module was listening for that action without registering it,
-    // so X never reached the multi-skill handler.
-    // KeyCode 88 = X.
+    // X key: keyCode 88.
     Input.keyMapper[88] = 'duelSkill';
 
     function noteValue(note, tag, fallback) {
@@ -103,6 +100,24 @@
             priority: Number(noteValue(note, 'ai_priority', '50')) || 50,
             range: Number(noteValue(note, 'ai_range', '9999')) || 9999,
             type: String(noteValue(note, 'ai_type', 'normal')).toLowerCase()
+        };
+    }
+
+    function skillHitbox(skill) {
+        if (!skill) return null;
+        var value = noteValue(skill.note, 'fhitbox', null);
+        if (value === null) return null;
+
+        var values = value.split(',').map(function(v) {
+            return Number(v.trim()) || 0;
+        });
+
+        if (values.length < 2) return null;
+
+        return {
+            width: Math.max(1, values[0]),
+            height: Math.max(1, values[1]),
+            distance: Math.max(0, values.length >= 3 ? values[2] : 0)
         };
     }
 
@@ -139,7 +154,6 @@
 
     function skillCost(skill) {
         if (!skill) return 0;
-
         var noteCost = noteValue(skill.note, 'fcost', null);
         if (COST_MODE === 'note' && noteCost !== null) {
             return Math.max(0, Number(noteCost) || 0);
@@ -149,6 +163,55 @@
         return Math.max(0, Number(skill.mpCost || 0));
     }
 
+    // ---------------------------------------------------------------------
+    // Hitbox test
+    // ---------------------------------------------------------------------
+    function skillHitboxHits(attacker, target, skill) {
+        var box = skillHitbox(skill);
+
+        // A skill without <fhitbox> keeps the old behavior: it hits directly.
+        // This preserves compatibility with skills that have not been given
+        // collision data yet.
+        if (!box) return true;
+        if (!attacker || !target) return false;
+
+        var facing = Number(attacker._duelFacing || 1);
+        if (facing >= 0) facing = 1;
+        else facing = -1;
+
+        var attackerX = Number(attacker._duelX || 0);
+        var attackerY = Number(attacker._duelY || 0);
+        var targetX = Number(target._duelX || 0);
+        var targetY = Number(target._duelY || 0);
+
+        // Fighter position is treated as the bottom-center of the sprite.
+        // The hitbox is centered vertically on the actor's duel position.
+        var centerX = attackerX + facing * (box.distance + box.width / 2);
+        var centerY = attackerY - box.height / 2;
+
+        var left = centerX - box.width / 2;
+        var right = centerX + box.width / 2;
+        var top = centerY - box.height / 2;
+        var bottom = centerY + box.height / 2;
+
+        // Target is represented by a small rectangular body around its
+        // bottom-center duel position. This avoids requiring sprite dimensions.
+        var targetHalfWidth = 20;
+        var targetHeight = 80;
+        var targetLeft = targetX - targetHalfWidth;
+        var targetRight = targetX + targetHalfWidth;
+        var targetTop = targetY - targetHeight;
+        var targetBottom = targetY;
+
+        return right >= targetLeft &&
+               left <= targetRight &&
+               bottom >= targetTop &&
+               top <= targetBottom;
+    }
+
+    // ---------------------------------------------------------------------
+    // Game_Actor - skill state
+    // ---------------------------------------------------------------------
     var _duelReset = Game_Actor.prototype.duelReset;
     Game_Actor.prototype.duelReset = function() {
         _duelReset.call(this);
@@ -196,7 +259,13 @@
         this._duelLastSkillId = skillId;
         this._duelPose = SKILL_POSE;
 
+        // The animation still plays exactly as before. Damage now depends on
+        // the skill's hitbox, if one was configured.
         playSkillAnimation(this, target, skill);
+
+        if (!skillHitboxHits(this, target, skill)) {
+            return true;
+        }
 
         var action = new Game_Action(this);
         action.setSkill(skillId);
@@ -298,8 +367,6 @@
         return candidates[candidates.length - 1].skillId;
     }
 
-    // AI support is optional in this module. If the base project exposes
-    // ActorDuelAI, extend it; otherwise player multi-skills still work safely.
     if (typeof ActorDuelAI !== 'undefined') {
         var _aiUpdate = ActorDuelAI.prototype.update;
         ActorDuelAI.prototype.update = function() {
