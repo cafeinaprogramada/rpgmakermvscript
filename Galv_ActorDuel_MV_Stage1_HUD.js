@@ -59,7 +59,9 @@
         this.bitmap.fillRect(x, y, w, h, color);
     };
 
-    Sprite_ActorDuelHud.prototype._frame = function(x, y, w, h) {
+    // Do not call this method _frame: Sprite.prototype.initialize creates
+    // an internal instance property named _frame.
+    Sprite_ActorDuelHud.prototype._drawFrame = function(x, y, w, h) {
         this.bitmap.fillRect(x, y, w, 2, '#111111');
         this.bitmap.fillRect(x, y + h - 2, w, 2, '#111111');
         this.bitmap.fillRect(x, y, 2, h, '#111111');
@@ -95,8 +97,6 @@
         this.bitmap.blt(bitmap, sx, sy, sw, sh, x + pad, y + pad, w - pad * 2, h - pad * 2);
 
         if (mirror) {
-            // Re-render the portrait mirrored using a temporary canvas bitmap.
-            // MV Bitmap's blt cannot mirror directly, so use the source canvas.
             var temp = document.createElement('canvas');
             temp.width = w - pad * 2;
             temp.height = h - pad * 2;
@@ -114,7 +114,7 @@
         rate = Math.max(0, Math.min(1, rate));
 
         this._rect(x, y, w, h, '#101010');
-        this._frame(x, y, w, h);
+        this._drawFrame(x, y, w, h);
 
         var inner = 4;
         var fillW = Math.floor((w - inner * 2) * rate);
@@ -133,7 +133,7 @@
     Sprite_ActorDuelHud.prototype._drawStaminaBar = function(x, y, w, h, rate, reverse) {
         rate = Math.max(0, Math.min(1, rate));
         this._rect(x, y, w, h, '#101010');
-        this._frame(x, y, w, h);
+        this._drawFrame(x, y, w, h);
         var inner = 3;
         var fillW = Math.floor((w - inner * 2) * rate);
         if (fillW > 0) {
@@ -161,53 +161,42 @@
         var stY = 78;
         var stH = 11;
 
-        // Dark translucent HUD panels.
         this._rect(12, 8, barW + portrait + 24, 108, 'rgba(0,0,0,0.68)');
         this._rect(width - (barW + portrait + 36), 8, barW + portrait + 24, 108, 'rgba(0,0,0,0.68)');
 
-        // Portraits.
         this._rect(leftX, top, portrait, portrait, '#202020');
-        this._frame(leftX, top, portrait, portrait);
+        this._drawFrame(leftX, top, portrait, portrait);
         this._drawPortrait(this._actor1, leftX, top, portrait, portrait, false);
 
         this._rect(width - 24 - portrait, top, portrait, portrait, '#202020');
-        this._frame(width - 24 - portrait, top, portrait, portrait);
+        this._drawFrame(width - 24 - portrait, top, portrait, portrait);
         this._drawPortrait(this._actor2, width - 24 - portrait, top, portrait, portrait, true);
 
-        // Names.
         this._text(this._actor1.name(), barX1, 18, barW, 25, 18, 'left', '#ffffff');
         this._text(this._actor2.name(), barX2, 18, barW, 25, 18, 'right', '#ffffff');
 
-        // HP bars, mirrored like a fighting game.
         var hp1 = this._actor1.mhp > 0 ? this._actor1.hp / this._actor1.mhp : 0;
         var hp2 = this._actor2.mhp > 0 ? this._actor2.hp / this._actor2.mhp : 0;
         this._drawHealthBar(barX1, hpY, barW, hpH, hp1, false);
         this._drawHealthBar(barX2, hpY, barW, hpH, hp2, true);
 
-        // Stamina.
         var maxSt = (typeof CFG !== 'undefined' && CFG.maxStamina) ? CFG.maxStamina : 500;
         var st1 = maxSt > 0 ? (this._actor1._duelStamina || 0) / maxSt : 0;
         var st2 = maxSt > 0 ? (this._actor2._duelStamina || 0) / maxSt : 0;
         this._drawStaminaBar(barX1, stY, barW, stH, st1, false);
         this._drawStaminaBar(barX2, stY, barW, stH, st2, true);
 
-        // Values.
         this._text(this._actor1.hp + ' / ' + this._actor1.mhp, barX1, 90, barW, 22, 13, 'left', '#ffffff');
         this._text(this._actor2.hp + ' / ' + this._actor2.mhp, barX2, 90, barW, 22, 13, 'right', '#ffffff');
         this._text('ST ' + Math.floor(this._actor1._duelStamina || 0), barX1, 104, barW, 20, 11, 'left', '#e7c83b');
         this._text('ST ' + Math.floor(this._actor2._duelStamina || 0), barX2, 104, barW, 20, 11, 'right', '#e7c83b');
     };
 
-    var _Scene_ActorDuel_createStatusWindows = Scene_ActorDuel.prototype._createStatusWindows;
-
     Scene_ActorDuel.prototype._createStatusWindows = function() {
-        // Do not create the old Window_ActorDuelStatus HUD.
-        // We deliberately keep the command window independent.
         this._duelHudSprite = new Sprite_ActorDuelHud(this._actor1, this._actor2);
         this.addChild(this._duelHudSprite);
     };
 
-    // Ensure the HUD is above the fighters/background but below command windows.
     var _Scene_ActorDuel_create = Scene_ActorDuel.prototype.create;
     Scene_ActorDuel.prototype.create = function() {
         _Scene_ActorDuel_create.call(this);
