@@ -274,12 +274,15 @@
         this._duelLastSkillId = skillId;
         this._duelPose = SKILL_POSE;
 
-        playSkillAnimation(this, target, skill);
-
-        // A configured hitbox determines whether the skill connects.
+        // First determine whether the attack actually connects.
+        // The impact animation is intentionally delayed until AFTER this
+        // hitbox test so a missed skill produces no animation on the target.
         if (!skillHitboxHits(this, target, skill)) {
             return true;
         }
+
+        // The hitbox connected: now play the database animation on the target.
+        playSkillAnimation(this, target, skill);
 
         var action = new Game_Action(this);
         action.setSkill(skillId);
