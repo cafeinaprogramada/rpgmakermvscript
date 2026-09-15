@@ -4,17 +4,16 @@
  * @help
  * Load this plugin AFTER Galv_ActorDuel_MV.
  *
- * Fixes without replacing the original Stage 1 plugin:
+ * Stage 1 fixes:
  * - Exposes jump strength as a plugin parameter.
- * - Recreates Galv's original HUD architecture using kombat_bar.png.
- * - Adds actor faces to the HUD.
- * - Draws HP and stamina using the original VX Ace layout.
+ * - Recreates the original two-sided kombat_bar HUD.
+ * - Draws both HP and stamina directly on a Bitmap, avoiding MV WindowLayer
+ *   ordering/opacity issues.
+ * - Adds both actor faces and names.
+ * - Values update every frame during the duel.
  *
  * Required image:
  *   img/system/kombat_bar.png
- *
- * This plugin intentionally patches the existing plugin instead of replacing it.
- * Once Stage 1 is stable, the patch can be merged into the main script.
  *
  * @param Jump Strength
  * @type number
@@ -34,10 +33,15 @@
     var JUMP_STRENGTH = Number(params['Jump Strength'] || 22);
     var HUD_IMAGE = String(params['HUD Image'] || 'kombat_bar');
 
+    // -------------------------------------------------------------
+    // Jump
+    // -------------------------------------------------------------
     if (Game_Actor.prototype.duelJump) {
         Game_Actor.prototype.duelJump = function() {
             if (this._duelDead) return;
-            if (!this._duelJumping && this._duelY >= 310) {
+            var ground = 310;
+            if (typeof CFG !== 'undefined' && CFG.groundY) ground = CFG.groundY;
+            if (!this._duelJumping && this._duelY >= ground) {
                 this._duelJumping = true;
                 this._duelVY = -JUMP_STRENGTH;
                 this._duelPose = 8;
@@ -45,16 +49,20 @@
         };
     }
 
+    // -------------------------------------------------------------
+    // Face sprite
+    // -------------------------------------------------------------
     function Sprite_ActorDuelHudFace(actor, mirror) {
         Sprite.call(this);
         this._actor = actor;
+        this._mirror = mirror;
         this.bitmap = ImageManager.loadFace(actor.faceName());
         var index = actor.faceIndex();
         var rect = new Rectangle((index % 4) * 144, Math.floor(index / 4) * 144, 144, 144);
         this.setFrame(rect.x, rect.y, rect.width, rect.height);
         this.scale.x = (96 / 144) * (mirror ? -1 : 1);
         this.scale.y = 96 / 144;
-        this.x = mirror ? Graphics.boxWidth : 0;
+        this.x = mirror ? Graphics.boxWidth - 4 : 4;
         this.y = 0;
         this.anchor.x = mirror ? 1 : 0;
         this.anchor.y = 0;
@@ -63,96 +71,137 @@
     Sprite_ActorDuelHudFace.prototype = Object.create(Sprite.prototype);
     Sprite_ActorDuelHudFace.prototype.constructor = Sprite_ActorDuelHudFace;
 
-    function Window_ActorDuelHUD() {
-        this.initialize.apply(this, arguments);
+    // -------------------------------------------------------------
+    // Direct bitmap HUD
+    // -------------------------------------------------------------
+    function Sprite_ActorDuelHUD() {
+        Sprite.call(this);
+        this._actor1 = null;
+        this._actor2 = null;
+        this._bar1 = null;
+        this._bar2 = null;
+        this.bitmap = new Bitmap(Graphics.boxWidth, 140);
+        this.z = 10;
     }
 
-    Window_ActorDuelHUD.prototype = Object.create(Window_Base.prototype);
-    Window_ActorDuelHUD.prototype.constructor = Window_ActorDuelHUD;
+    Sprite_ActorDuelHUD.prototype = Object.create(Sprite.prototype);
+    Sprite_ActorDuelHUD.prototype.constructor = Sprite_ActorDuelHUD;
 
-    Window_ActorDuelHUD.prototype.initialize = function(actor1, actor2) {
-        Window_Base.prototype.initialize.call(this, 0, 0, Graphics.boxWidth, 140);
+    Sprite_ActorDuelHUD.prototype.setup = function(actor1, actor2) {
         this._actor1 = actor1;
         this._actor2 = actor2;
-        this.opacity = 0;
-        this.backOpacity = 0;
+        this._refreshBars();
         this.refresh();
     };
 
-    Window_ActorDuelHUD.prototype.update = function() {
-        Window_Base.prototype.update.call(this);
+    Sprite_ActorDuelHUD.prototype._refreshBars = function() {
+        this._bar1 = new Sprite();
+        this._bar1.bitmap = ImageManager.loadSystem(HUD_IMAGE);
+        this._bar1.x = 0;
+        this._bar1.y = 0;
+
+        this._bar2 = new Sprite();
+        this._bar2.bitmap = ImageManager.loadSystem(HUD_IMAGE);
+        this._bar2.x = Graphics.boxWidth;
+        this._bar2.y = 0;
+        this._bar2.anchor.x = 1;
+        this._bar2.scale.x = -1;
+
+        this.addChild(this._bar1);
+        this.addChild(this._bar2);
+    };
+
+    Sprite_ActorDuelHUD.prototype.update = function() {
+        Sprite.prototype.update.call(this);
         this.refresh();
     };
 
-    Window_ActorDuelHUD.prototype.refresh = function() {
-        this.contents.clear();
-        if (!this._actor1 || !this._actor2) return;
+    Sprite_ActorDuelHUD.prototype.refresh = function() {
+        if (!this.bitmap || !this._actor1 || !this._actor2) return;
+
+        this.bitmap.clear();
+
         this._drawPlayer1(this._actor1);
         this._drawPlayer2(this._actor2);
     };
 
-    Window_ActorDuelHUD.prototype._drawPlayer1 = function(actor) {
+    Sprite_ActorDuelHUD.prototype._drawPlayer1 = function(actor) {
         var x = 100;
-        this._drawHp(actor, x, 15, false);
-        this._drawStamina(actor, x, 40, false);
-        this.drawText(actor.name(), x, 0, 100, 'left');
-        this.drawActorIcons(actor, x, 65, 240);
+        this._drawName(actor.name(), x, 4, 150, false);
+        this._drawHp(actor, x, 22, false);
+        this._drawStamina(actor, x, 48, false);
     };
 
-    Window_ActorDuelHUD.prototype._drawPlayer2 = function(actor) {
-        var x = this.contents.width - 224;
-        this._drawHp(actor, x, 15, true);
-        this._drawStamina(actor, x, 40, true);
-        this.drawText(actor.name(), x - 24, 0, 100, 'right');
-        this.drawActorIcons(actor, x, 65, 240);
+    Sprite_ActorDuelHUD.prototype._drawPlayer2 = function(actor) {
+        var x = Graphics.boxWidth - 224;
+        this._drawName(actor.name(), x - 24, 4, 150, true);
+        this._drawHp(actor, x, 22, true);
+        this._drawStamina(actor, x, 48, true);
     };
 
-    Window_ActorDuelHUD.prototype._drawHp = function(actor, x, y, reverse) {
+    Sprite_ActorDuelHUD.prototype._drawName = function(name, x, y, width, reverse) {
+        this.bitmap.fontSize = 22;
+        this.bitmap.textColor = '#ffffff';
+        this.bitmap.outlineColor = '#000000';
+        this.bitmap.outlineWidth = 4;
+        this.bitmap.drawText(String(name), x, y, width, 26, reverse ? 'right' : 'left');
+    };
+
+    Sprite_ActorDuelHUD.prototype._drawHp = function(actor, x, y, reverse) {
         var rate = actor.mhp > 0 ? actor.hp / actor.mhp : 0;
-        this._drawDuelGauge(x, y, 124, rate, this.hpGaugeColor1(), this.hpGaugeColor2(), reverse, 12);
+        this._drawGauge(x, y, 124, 12, rate, '#401010', '#ff4040', reverse);
+
+        this.bitmap.fontSize = 16;
+        this.bitmap.textColor = '#ffffff';
+        this.bitmap.outlineColor = '#000000';
+        this.bitmap.outlineWidth = 3;
+        this.bitmap.drawText(String(Math.max(0, actor.hp)) + ' / ' + String(actor.mhp), x, y - 2, 124, 20, reverse ? 'right' : 'left');
     };
 
-    Window_ActorDuelHUD.prototype._drawStamina = function(actor, x, y, reverse) {
+    Sprite_ActorDuelHUD.prototype._drawStamina = function(actor, x, y, reverse) {
         var rate = actor.duelStaminaRate ? actor.duelStaminaRate() : 0;
-        this._drawDuelGauge(x, y, 124, rate, this.mpGaugeColor1(), this.mpGaugeColor2(), reverse, 6);
+        this._drawGauge(x, y, 124, 7, rate, '#101020', '#55aaff', reverse);
+
+        var stamina = actor._duelStamina != null ? Math.floor(actor._duelStamina) : 0;
+        var max = 500;
+        if (typeof CFG !== 'undefined' && CFG.maxStamina) max = CFG.maxStamina;
+
+        this.bitmap.fontSize = 13;
+        this.bitmap.textColor = '#ffffff';
+        this.bitmap.outlineColor = '#000000';
+        this.bitmap.outlineWidth = 2;
+        this.bitmap.drawText('ST ' + stamina + ' / ' + max, x, y + 1, 124, 18, reverse ? 'right' : 'left');
     };
 
-    Window_ActorDuelHUD.prototype._drawDuelGauge = function(x, y, width, rate, color1, color2, reverse, height) {
+    Sprite_ActorDuelHUD.prototype._drawGauge = function(x, y, width, height, rate, back, fill, reverse) {
         rate = Math.max(0, Math.min(1, rate));
-        var fillW = Math.floor(width * rate);
-        var gaugeY = y + this.lineHeight() - 8;
-        this.contents.fillRect(x, gaugeY, width, height, this.gaugeBackColor());
-        if (fillW <= 0) return;
+        this.bitmap.fillRect(x, y, width, height, back);
+
+        var fillWidth = Math.floor(width * rate);
+        if (fillWidth <= 0) return;
+
         if (reverse) {
-            this.contents.gradientFillRect(x + width - fillW, gaugeY, fillW, height, color1, color2);
+            this.bitmap.fillRect(x + width - fillWidth, y, fillWidth, height, fill);
         } else {
-            this.contents.gradientFillRect(x, gaugeY, fillW, height, color1, color2);
+            this.bitmap.fillRect(x, y, fillWidth, height, fill);
         }
     };
 
+    // -------------------------------------------------------------
+    // Scene integration
+    // -------------------------------------------------------------
     if (typeof Scene_ActorDuel !== 'undefined') {
         Scene_ActorDuel.prototype._createStatusWindows = function() {
-            this._duelHudBar1 = new Sprite();
-            this._duelHudBar1.bitmap = ImageManager.loadSystem(HUD_IMAGE);
-            this._duelHudBar1.x = 0;
-            this._duelHudBar1.y = 0;
-            this.addChild(this._duelHudBar1);
-
-            this._duelHudBar2 = new Sprite();
-            this._duelHudBar2.bitmap = ImageManager.loadSystem(HUD_IMAGE);
-            this._duelHudBar2.x = Graphics.boxWidth;
-            this._duelHudBar2.y = 0;
-            this._duelHudBar2.anchor.x = 1;
-            this._duelHudBar2.scale.x = -1;
-            this.addChild(this._duelHudBar2);
+            this._duelHud = new Sprite_ActorDuelHUD();
+            this._duelHud.setup(this._actor1, this._actor2);
+            this._duelHud.x = 0;
+            this._duelHud.y = 0;
+            this.addChild(this._duelHud);
 
             this._duelHudFace1 = new Sprite_ActorDuelHudFace(this._actor1, false);
             this._duelHudFace2 = new Sprite_ActorDuelHudFace(this._actor2, true);
             this.addChild(this._duelHudFace1);
             this.addChild(this._duelHudFace2);
-
-            this._statusHud = new Window_ActorDuelHUD(this._actor1, this._actor2);
-            this.addWindow(this._statusHud);
         };
     }
 })();
