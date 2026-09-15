@@ -1,513 +1,500 @@
 /*:
- * @plugindesc Galv Actor Duel MV - Fighting AI Decision Engine (MUGEN-style weighted decisions)
+ * @plugindesc Galv Actor Duel MV - Fighting AI Decision Engine (MUGEN-style weighted decisions) v2
  * @author OpenAI / based on Galv's Actor Duel Mini Game v1.5
  *
  * @help
- * MUGEN-style AI decision system for Actor Duel MV.
+ * AI de luta baseada em máquina de decisão com pesos, condições e memória
+ * curta de movimento. Funciona como uma camada sobre o sistema de duelo.
  *
- * This plugin does NOT replace the combat system. It replaces the decision
- * making of the CPU fighter when the actor contains <fai> in its Notes.
- * The AI evaluates conditions and chooses between the same commands already
- * available to the duel engine: approach, retreat, attack, guard, skill,
- * jump and wait.
- *
- * Actor activation:
+ * ATIVAÇÃO NO ATOR:
  *   <fai>
  *
- * Actor AI parameters (all 1..100):
+ * PARÂMETROS (1..100):
  *   <fai_aggression: 70>
  *   <fai_defense: 45>
  *   <fai_skill: 60>
  *   <fai_retreat: 20>
- *   <fai_jump: 10>
+ *   <fai_jump: 25>
  *   <fai_movement: 80>
  *   <fai_reaction: 60>
  *   <fai_spacing: 50>
  *
- * Meaning:
- *   aggression = tendency to attack with the basic attack
- *   defense    = tendency to guard when threatened
- *   skill      = tendency to use configured skills
- *   retreat    = tendency to create distance
- *   jump       = tendency to jump
- *   movement   = willingness to reposition instead of waiting
- *   reaction   = decision frequency; higher reacts sooner
- *   spacing    = preferred distance bias; higher prefers more space
+ * MOVIMENTO AÉREO:
+ *   <fai_air: 35>
+ *   <fai_air_approach: 70>
+ *   <fai_air_retreat: 30>
  *
- * Skill notetags already supported by Stage2 MultiSkills are respected:
+ * Quanto maior o valor, maior a tendência daquele comportamento.
+ * Os parâmetros não são comandos absolutos: primeiro são avaliadas as
+ * condições da situação e somente depois os pesos entram no sorteio.
+ *
+ * O movimento é contínuo. A IA mantém uma direção entre decisões, como se
+ * estivesse segurando a tecla, evitando o efeito de pequenos cliques.
+ *
+ * O salto usa o mesmo duelJump() do sistema principal. Durante o salto,
+ * esquerda/direita continuam funcionando, permitindo salto diagonal.
+ *
+ * Skills continuam usando as informações do Stage2 MultiSkills:
  *   <fskills: 2,3,4,5>
  *   <fhitbox: 80,40,60,30>
  *   <fcost: 100>
  *   <ai_priority: 80>
  *   <ai_range: 250>
- *   <ai_type: projectile>
- *
- * The AI derives skill reach from <fhitbox> when available, so changing a
- * skill's hitbox automatically changes where the AI wants to stand.
- *
- * Notes:
- *   - AI decisions are weighted, not perfectly deterministic.
- *   - Only one decision is made at each decision window.
- *   - The AI never attacks outside the actual basic attack range.
- *   - The AI never selects a skill that cannot reach the opponent.
- *   - The AI uses the existing duel commands instead of directly changing
- *     combat values, keeping it synchronized with the main duel system.
- *
- * Plugin order:
- *   Galv_ActorDuel_MV.js
- *   Galv_ActorDuel_MV_Stage1_Fix.js
- *   Galv_ActorDuel_MV_Stage1_HUD.js
- *   Galv_ActorDuel_MV_Stage1_CombatFX.js
- *   Galv_ActorDuel_MV_Stage2_MultiSkills.js
- *   Galv_ActorDuel_MV_Stage2_SoundFX.js
- *   Galv_ActorDuel_MV_Stage2_FightingAI.js   <-- this plugin
- *
- * @param Decision Interval
- * @type number
- * @min 1
- * @default 18
- *
- * @param Minimum Decision Interval
- * @type number
- * @min 1
- * @default 5
- *
- * @param Guard Reaction Range
- * @type number
- * @min 1
- * @default 120
- *
- * @param Target Half Width
- * @type number
- * @min 1
- * @default 20
- *
- * @param Skill Range Padding
- * @type number
- * @min 0
- * @default 20
- *
- * @param Low HP Threshold
- * @type number
- * @min 1
- * @max 100
- * @default 30
- *
- * @param Debug Log
- * @type boolean
- * @on ON
- * @off OFF
- * @default false
  */
-
 (function() {
     'use strict';
 
     var pluginName = 'Galv_ActorDuel_MV_Stage2_FightingAI';
     var params = PluginManager.parameters(pluginName);
 
-    var BASE_INTERVAL = Math.max(1, Number(params['Decision Interval'] || 18));
-    var MIN_INTERVAL = Math.max(1, Number(params['Minimum Decision Interval'] || 5));
-    var GUARD_RANGE = Math.max(1, Number(params['Guard Reaction Range'] || 120));
-    var TARGET_HALF_WIDTH = Math.max(1, Number(params['Target Half Width'] || 20));
-    var SKILL_PADDING = Math.max(0, Number(params['Skill Range Padding'] || 20));
-    var LOW_HP_THRESHOLD = Math.max(1, Number(params['Low HP Threshold'] || 30)) / 100;
-    var DEBUG = String(params['Debug Log'] || 'false').toLowerCase() === 'true';
+    var CFG = {
+        decisionInterval: Number(params['Decision Interval'] || 10),
+        minDecisionInterval: Number(params['Minimum Decision Interval'] || 5),
+        airJumpMultiplier: Number(params['Air Jump Multiplier'] || 1.0),
+        airDecisionChance: Number(params['Air Decision Chance'] || 35),
+        airApproachBias: Number(params['Air Approach Bias'] || 70),
+        airRetreatBias: Number(params['Air Retreat Bias'] || 30),
+        jumpCooldown: Number(params['Jump Cooldown'] || 65),
+        movementCommit: Number(params['Movement Commit'] || 18)
+    };
 
-    function noteValue(note, tag, fallback) {
-        var regex = new RegExp('<' + tag + ':\\s*([^>]+)>', 'i');
-        var match = String(note || '').match(regex);
-        return match ? match[1].trim() : fallback;
+    function noteNumber(note, tag, fallback) {
+        var regex = new RegExp('<' + tag + ':\\s*([0-9]+)>', 'i');
+        var m = String(note || '').match(regex);
+        if (!m) return fallback;
+        return Math.max(1, Math.min(100, Number(m[1])));
     }
 
-    function hasNote(note, tag) {
-        return new RegExp('<' + tag + '(?:\\s|>|:)', 'i').test(String(note || ''));
+    function hasTag(note, tag) {
+        return new RegExp('<' + tag + '>','i').test(String(note || ''));
     }
 
-    function clamp100(value, fallback) {
-        var n = Number(value);
-        if (!isFinite(n)) n = fallback;
-        return Math.max(1, Math.min(100, n));
-    }
-
-    function aiProfile(actor) {
+    function aiData(actor) {
         var note = actor && actor.actor ? actor.actor().note : '';
         return {
-            enabled: hasNote(note, 'fai'),
-            aggression: clamp100(noteValue(note, 'fai_aggression', '70'), 70),
-            defense: clamp100(noteValue(note, 'fai_defense', '45'), 45),
-            skill: clamp100(noteValue(note, 'fai_skill', '60'), 60),
-            retreat: clamp100(noteValue(note, 'fai_retreat', '20'), 20),
-            jump: clamp100(noteValue(note, 'fai_jump', '10'), 10),
-            movement: clamp100(noteValue(note, 'fai_movement', '80'), 80),
-            reaction: clamp100(noteValue(note, 'fai_reaction', '60'), 60),
-            spacing: clamp100(noteValue(note, 'fai_spacing', '50'), 50)
+            enabled: hasTag(note, 'fai'),
+            aggression: noteNumber(note, 'fai_aggression', 70),
+            defense: noteNumber(note, 'fai_defense', 45),
+            skill: noteNumber(note, 'fai_skill', 60),
+            retreat: noteNumber(note, 'fai_retreat', 20),
+            jump: noteNumber(note, 'fai_jump', 25),
+            movement: noteNumber(note, 'fai_movement', 80),
+            reaction: noteNumber(note, 'fai_reaction', 60),
+            spacing: noteNumber(note, 'fai_spacing', 50),
+            air: noteNumber(note, 'fai_air', 35),
+            airApproach: noteNumber(note, 'fai_air_approach', 70),
+            airRetreat: noteNumber(note, 'fai_air_retreat', 30)
         };
     }
 
-    function slotsFor(actor) {
-        if (!actor || !actor.actor) return [];
-        var value = noteValue(actor.actor().note, 'fskills', '0,0,0,0');
-        var values = value.split(',').map(function(v) {
-            return Number(v.trim()) || 0;
-        });
-        while (values.length < 4) values.push(0);
-        return values.slice(0, 4);
+    function clamp100(value) {
+        return Math.max(0, Math.min(100, value));
     }
 
-    function skillCost(skill) {
-        if (!skill) return 0;
-        var noteCost = noteValue(skill.note, 'fcost', null);
-        if (noteCost !== null) return Math.max(0, Number(noteCost) || 0);
-        return Math.max(0, Number(skill.mpCost || 0));
+    function weightedPick(items) {
+        var total = 0;
+        items.forEach(function(item) {
+            item.weight = Math.max(0, item.weight || 0);
+            total += item.weight;
+        });
+        if (total <= 0) return null;
+        var roll = Math.random() * total;
+        for (var i = 0; i < items.length; i++) {
+            roll -= items[i].weight;
+            if (roll <= 0) return items[i].action;
+        }
+        return items[items.length - 1].action;
+    }
+
+    // ---------------------------------------------------------------------
+    // Hitbox / skill helpers. We deliberately read the existing MultiSkills
+    // notetags instead of creating a second combat system.
+    // ---------------------------------------------------------------------
+    function noteValue(note, tag, fallback) {
+        var regex = new RegExp('<' + tag + ':\\s*([^>]+)>', 'i');
+        var m = String(note || '').match(regex);
+        return m ? m[1].trim() : fallback;
     }
 
     function skillHitbox(skill) {
         if (!skill) return null;
-        var value = noteValue(skill.note, 'fhitbox', null);
-        if (value === null) return null;
-        var values = value.split(',').map(function(v) {
-            return Number(v.trim()) || 0;
-        });
-        if (values.length < 2) return null;
+        var raw = noteValue(skill.note, 'fhitbox', '');
+        if (!raw) return null;
+        var values = raw.split(',').map(function(v) { return Number(v.trim()); });
         return {
-            width: Math.max(1, values[0]),
-            height: Math.max(1, values[1]),
-            distance: Math.max(0, values.length >= 3 ? values[2] : 0),
-            knockback: Math.max(0, values.length >= 4 ? values[3] : 0)
+            width: Math.max(0, values[0] || 0),
+            height: Math.max(0, values[1] || 0),
+            distance: Math.max(0, values[2] || 0)
         };
     }
 
-    function skillAiData(skill) {
-        return {
-            priority: Math.max(1, Number(noteValue(skill ? skill.note : '', 'ai_priority', '50')) || 50),
-            range: Math.max(1, Number(noteValue(skill ? skill.note : '', 'ai_range', '9999')) || 9999),
-            type: String(noteValue(skill ? skill.note : '', 'ai_type', 'normal')).toLowerCase()
-        };
+    function skillCost(skill) {
+        if (!skill) return 0;
+        var raw = noteValue(skill.note, 'fcost', '');
+        if (raw !== '') return Math.max(0, Number(raw));
+        return Math.max(0, Number(skill.mpCost || 0) + Number(skill.tpCost || 0));
     }
 
     function skillRange(skill) {
-        var ai = skillAiData(skill);
+        if (!skill) return 0;
+        var raw = noteValue(skill.note, 'ai_range', '');
+        if (raw !== '') return Math.max(0, Number(raw));
         var box = skillHitbox(skill);
-
-        if (!box) {
-            return {
-                min: 0,
-                max: ai.range,
-                center: Math.min(ai.range, 60),
-                hasHitbox: false
-            };
-        }
-
-        // Same horizontal approximation used by MultiSkills hitbox collision:
-        // the opponent's body contributes TARGET_HALF_WIDTH at either edge.
-        var min = Math.max(0, box.distance - TARGET_HALF_WIDTH);
-        var max = box.distance + box.width + TARGET_HALF_WIDTH;
-
-        // ai_range acts as an intentional upper restriction when supplied.
-        if (ai.range < 9999) max = Math.min(max, ai.range + SKILL_PADDING);
-
-        return {
-            min: min,
-            max: Math.max(min, max),
-            center: (min + Math.max(min, max)) / 2,
-            hasHitbox: true
-        };
+        if (box) return box.distance + box.width;
+        return 0;
     }
 
-    function canUseSkill(actor, skillId) {
-        if (!actor || !skillId || !$dataSkills || !$dataSkills[skillId]) return false;
-        if (typeof actor.duelCanUseSkill === 'function' && !actor.duelCanUseSkill(skillId)) return false;
-        return actor._duelStamina >= skillCost($dataSkills[skillId]);
+    function skillPriority(skill) {
+        if (!skill) return 50;
+        return noteNumber(skill.note, 'ai_priority', 50);
     }
 
-    function skillCandidates(actor, distance) {
-        var result = [];
-        var slots = slotsFor(actor);
-
-        for (var i = 0; i < slots.length; i++) {
-            var skillId = Number(slots[i] || 0);
-            if (skillId <= 0 || !$dataSkills[skillId]) continue;
-            if (!canUseSkill(actor, skillId)) continue;
-
-            var skill = $dataSkills[skillId];
-            var range = skillRange(skill);
-            var ai = skillAiData(skill);
-
-            result.push({
-                id: skillId,
-                priority: ai.priority,
-                range: range,
-                type: ai.type,
-                inRange: distance >= range.min && distance <= range.max
-            });
-        }
-
-        return result;
-    }
-
-    function weightedPick(actions) {
-        var total = 0;
-        actions.forEach(function(action) {
-            total += Math.max(0, action.weight || 0);
+    function configuredSkills(actor) {
+        var note = actor.actor().note || '';
+        var raw = noteValue(note, 'fskills', '');
+        if (!raw) return [];
+        return raw.split(',').map(function(v) { return Number(v.trim()); }).filter(function(id) {
+            return id > 0 && $dataSkills[id];
         });
-        if (total <= 0) return null;
-
-        var roll = Math.random() * total;
-        var sum = 0;
-        for (var i = 0; i < actions.length; i++) {
-            sum += Math.max(0, actions[i].weight || 0);
-            if (roll <= sum) return actions[i];
-        }
-        return actions[actions.length - 1];
     }
 
-    function distanceToOpponent(actor, opponent) {
-        return Math.abs(Number(opponent._duelX || 0) - Number(actor._duelX || 0));
-    }
-
-    function reactionInterval(profile) {
-        // 1 = slow and human-like. 100 = frequent decisions.
-        var factor = 1 - (profile.reaction - 1) / 120;
-        return Math.max(MIN_INTERVAL, Math.round(BASE_INTERVAL * factor));
-    }
-
-    function nearestSkillRange(candidates, distance) {
+    function bestUsableSkill(actor, distance) {
+        var ids = configuredSkills(actor);
         var best = null;
-        candidates.forEach(function(c) {
-            if (!best) {
-                best = c;
-                return;
+        var bestScore = -1;
+
+        ids.forEach(function(id) {
+            var skill = $dataSkills[id];
+            if (!skill) return;
+            var cost = skillCost(skill);
+            if (actor._duelStamina < cost) return;
+            if (typeof actor.duelCanUseSkill === 'function' && !actor.duelCanUseSkill(id)) return;
+
+            var range = skillRange(skill);
+            if (range > 0 && distance > range + 40) return;
+
+            var score = skillPriority(skill);
+            if (range > 0) {
+                var distanceFit = 100 - Math.min(100, Math.abs(distance - range) / Math.max(1, range) * 100);
+                score += distanceFit * 0.35;
             }
-            var d1 = Math.abs(distance - c.range.center);
-            var d2 = Math.abs(distance - best.range.center);
-            if (d1 < d2) best = c;
+            if (score > bestScore) {
+                bestScore = score;
+                best = skill;
+            }
         });
         return best;
     }
 
-    function logDecision(actor, decision, distance) {
-        if (!DEBUG || !actor) return;
-        console.log('[ActorDuel AI] ' + actor.name() +
-            ' -> ' + decision.type +
-            ' | distance=' + Math.round(distance) +
-            ' | skill=' + (decision.skillId || 0));
+    function basicAttackReach(actor) {
+        if (!actor) return 45;
+        var data = actor.duelData ? actor.duelData() : null;
+        return Math.max(1, Number(data && data.range || 45));
     }
 
-    function executeDecision(ai, decision, context) {
+    function maxRelevantReach(actor) {
+        var reach = basicAttackReach(actor);
+        configuredSkills(actor).forEach(function(id) {
+            var skill = $dataSkills[id];
+            reach = Math.max(reach, skillRange(skill));
+        });
+        return reach;
+    }
+
+    // ---------------------------------------------------------------------
+    // Continuous movement: the AI commits to a direction for a short period
+    // instead of deciding every few frames whether to press the key again.
+    // ---------------------------------------------------------------------
+    function ensureState(ai) {
+        if (ai._movementDirection === undefined) ai._movementDirection = 0;
+        if (ai._movementTimer === undefined) ai._movementTimer = 0;
+        if (ai._decisionTimer === undefined) ai._decisionTimer = 0;
+        if (ai._jumpCooldown === undefined) ai._jumpCooldown = 0;
+        if (ai._airDecisionTimer === undefined) ai._airDecisionTimer = 0;
+    }
+
+    function setMovement(ai, direction, duration) {
+        ai._movementDirection = direction;
+        ai._movementTimer = Math.max(CFG.minDecisionInterval, duration || CFG.movementCommit);
+    }
+
+    function continueMovement(ai) {
         var actor = ai.actor;
-        var opponent = ai.opponent;
-        if (!actor || !opponent || !decision) return;
+        if (!actor || actor._duelDead) return false;
+        if (actor._duelHitTimer > 0 || actor._duelAttackTimer > 0) return false;
+        if (!ai._movementDirection) return false;
+        actor.duelMove(ai._movementDirection);
+        return true;
+    }
 
-        switch (decision.type) {
-        case 'guard':
-            actor.duelStartGuard(true);
-            break;
+    function clearMovement(ai) {
+        ai._movementDirection = 0;
+        ai._movementTimer = 0;
+    }
 
-        case 'attack':
-            actor.duelStartGuard(false);
-            actor.duelStartAttack();
-            break;
+    // ---------------------------------------------------------------------
+    // Air movement / diagonal jumps
+    // ---------------------------------------------------------------------
+    function tryAirMovement(ai, data, directionToOpponent, distance) {
+        var actor = ai.actor;
+        if (!actor._duelJumping) return false;
+        if (actor._duelHitTimer > 0 || actor._duelAttackTimer > 0) return false;
 
-        case 'skill':
-            actor.duelStartGuard(false);
-            if (typeof actor.duelUseSkill === 'function') {
-                actor.duelUseSkill(decision.skillId);
-            }
-            break;
-
-        case 'approach':
-            actor.duelStartGuard(false);
-            actor.duelMove(context.direction);
-            break;
-
-        case 'retreat':
-            actor.duelStartGuard(false);
-            actor.duelMove(-context.direction);
-            break;
-
-        case 'jump':
-            actor.duelStartGuard(false);
-            actor.duelJump();
-            break;
-
-        case 'wait':
-        default:
-            actor.duelStartGuard(false);
-            break;
+        // During a jump, horizontal movement remains active every frame.
+        // This produces the equivalent of holding Left/Right while jumping.
+        var airDirection = directionToOpponent;
+        if (Math.random() * 100 < data.airRetreat && distance < basicAttackReach(actor) * 1.15) {
+            airDirection = -directionToOpponent;
         }
+        if (Math.random() * 100 < data.airApproach && distance > basicAttackReach(actor)) {
+            airDirection = directionToOpponent;
+        }
+        actor.duelMove(airDirection);
+        return true;
     }
 
-    function decide(ai) {
-        var actor = ai.actor;
-        var opponent = ai.opponent;
+    function canJump(actor) {
+        return actor && !actor._duelJumping && !actor._duelDead &&
+               actor._duelY >= 309 && actor._duelHitTimer <= 0 &&
+               actor._duelAttackTimer <= 0 && !actor._duelGuarding;
+    }
+
+    // ---------------------------------------------------------------------
+    // Decision engine
+    // ---------------------------------------------------------------------
+    function ActorDuelAI(actor, opponent) {
+        this.actor = actor;
+        this.opponent = opponent;
+        this.actionTimer = 0;
+        this.jumpTimer = 0;
+        this._movementDirection = 0;
+        this._movementTimer = 0;
+        this._decisionTimer = 0;
+        this._jumpCooldown = 0;
+        this._airDecisionTimer = 0;
+    }
+
+    ActorDuelAI.prototype.update = function() {
+        var actor = this.actor;
+        var opponent = this.opponent;
         if (!actor || !opponent) return;
+        if (actor._duelDead || opponent._duelDead) return;
 
-        var profile = ai._faiProfile || aiProfile(actor);
-        var distance = distanceToOpponent(actor, opponent);
-        var horizontal = Number(opponent._duelX || 0) - Number(actor._duelX || 0);
-        var direction = horizontal >= 0 ? 1 : -1;
-        var attackRange = Number(actor.duelData && actor.duelData().range || 45);
-        var skills = skillCandidates(actor, distance);
-        var usableSkills = skills.filter(function(s) { return s.inRange; });
-        var hpRate = actor.mhp > 0 ? actor.hp / actor.mhp : 1;
-        var opponentHpRate = opponent.mhp > 0 ? opponent.hp / opponent.mhp : 1;
-        var opponentAttacking = opponent._duelAttackTimer > 0;
-        var opponentHit = opponent._duelHitTimer > 0;
-        var closeThreat = distance <= Math.max(attackRange, GUARD_RANGE);
-        var lowHp = hpRate <= LOW_HP_THRESHOLD;
+        var data = aiData(actor);
+        if (!data.enabled) return;
+        ensureState(this);
 
+        if (this._jumpCooldown > 0) this._jumpCooldown--;
+        if (this._movementTimer > 0) this._movementTimer--;
+        if (this._decisionTimer > 0) this._decisionTimer--;
+        if (this._airDecisionTimer > 0) this._airDecisionTimer--;
+
+        var delta = opponent._duelX - actor._duelX;
+        var distance = Math.abs(delta);
+        var direction = delta >= 0 ? 1 : -1;
         actor._duelFacing = direction;
 
-        // -------------------------------------------------------------
-        // Build MUGEN-style weighted choices.
-        // Each condition gates a command; the final choice is weighted.
-        // -------------------------------------------------------------
-        var actions = [];
-
-        // Defense has priority when the opponent is actively attacking.
-        if (opponentAttacking && closeThreat) {
-            var guardThreat = profile.defense * 2;
-            if (opponentHit) guardThreat *= 0.35;
-            actions.push({ type: 'guard', weight: guardThreat });
-        } else if (closeThreat && profile.defense >= 50 && Math.random() * 100 < profile.defense * 0.25) {
-            actions.push({ type: 'guard', weight: profile.defense * 0.35 });
+        // Continuous horizontal movement during a jump.
+        if (actor._duelJumping) {
+            tryAirMovement(this, data, direction, distance);
+            return;
         }
 
-        // Skills are evaluated by their own actual reach and priority.
-        if (usableSkills.length && !opponentHit) {
-            usableSkills.forEach(function(skill) {
-                var weight = profile.skill * skill.priority / 50;
-                if (opponentAttacking) weight *= 0.35;
-                if (lowHp) weight *= 1.10;
-                actions.push({ type: 'skill', skillId: skill.id, weight: weight });
+        // Hit/attack states have priority over AI decisions.
+        if (actor._duelHitTimer > 0 || actor._duelAttackTimer > 0) {
+            clearMovement(this);
+            return;
+        }
+
+        // Keep holding the chosen movement direction until its commitment
+        // expires. This is what restores smooth keyboard-like movement.
+        if (this._movementTimer > 0 && this._movementDirection !== 0) {
+            continueMovement(this);
+        }
+
+        // A higher reaction value means shorter decision intervals.
+        if (this._decisionTimer > 0) return;
+        var reactionFactor = data.reaction / 100;
+        var interval = Math.max(
+            CFG.minDecisionInterval,
+            Math.round(CFG.decisionInterval * (1.5 - reactionFactor))
+        );
+        this._decisionTimer = interval;
+
+        var basicReach = basicAttackReach(actor);
+        var usableSkill = bestUsableSkill(actor, distance);
+        var skillReach = usableSkill ? skillRange(usableSkill) : 0;
+        var preferredReach = Math.max(basicReach, skillReach);
+
+        var threat = opponent._duelAttackTimer > 0 || opponent._duelJumping;
+        var veryClose = distance <= Math.max(20, basicReach * 0.55);
+        var inBasicRange = distance <= basicReach + 20;
+        var inSkillRange = usableSkill && distance <= skillReach + 30;
+        var tooFar = distance > preferredReach + 35;
+        var lowHp = actor.mhp > 0 && actor.hp / actor.mhp <= 0.30;
+
+        var choices = [];
+
+        // GUARD: only meaningful when a threat is present or the enemy is close.
+        if (threat && (inBasicRange || veryClose)) {
+            choices.push({
+                action: 'guard',
+                weight: data.defense * (opponent._duelAttackTimer > 0 ? 1.35 : 0.75)
             });
         }
 
-        // Basic attack is only considered when its real duel range is met.
-        if (distance <= attackRange && !opponentAttacking) {
-            var attackWeight = profile.aggression;
-            if (opponentHit) attackWeight *= 1.35;
-            if (opponentHpRate <= LOW_HP_THRESHOLD) attackWeight *= 1.15;
-            actions.push({ type: 'attack', weight: attackWeight });
+        // SKILL: only if a real configured skill can currently be used.
+        if (usableSkill && inSkillRange) {
+            var skillWeight = data.skill * (skillPriority(usableSkill) / 50);
+            if (distance > basicReach) skillWeight *= 1.25;
+            if (lowHp) skillWeight *= 0.9;
+            choices.push({ action: 'skill', weight: clamp100(skillWeight) });
         }
 
-        // Retreat becomes more attractive at low HP and when the opponent
-        // is already threatening at close range.
-        if ((lowHp || opponentAttacking) && closeThreat) {
-            var retreatWeight = profile.retreat;
-            if (lowHp) retreatWeight *= 2.0;
-            if (opponentAttacking) retreatWeight *= 1.25;
-            actions.push({ type: 'retreat', weight: retreatWeight });
+        // BASIC ATTACK: only if its actual normal range is reached.
+        if (inBasicRange) {
+            var attackWeight = data.aggression;
+            if (opponent._duelHitTimer > 0) attackWeight *= 1.25;
+            if (tooFar) attackWeight = 0;
+            choices.push({ action: 'attack', weight: clamp100(attackWeight) });
         }
 
-        // If there is a useful skill farther away, approach its range rather
-        // than blindly walking into the opponent's face.
-        var nearestSkill = nearestSkillRange(skills, distance);
-        var preferredRange = attackRange;
-        if (nearestSkill && profile.skill >= profile.aggression && nearestSkill.range.max > attackRange) {
-            preferredRange = nearestSkill.range.center;
+        // RETREAT: stronger when too close, threatened or low HP.
+        if (veryClose || threat || lowHp) {
+            var retreatWeight = data.retreat;
+            if (veryClose) retreatWeight *= 1.35;
+            if (lowHp) retreatWeight *= 1.5;
+            if (threat) retreatWeight *= 1.15;
+            choices.push({ action: 'retreat', weight: clamp100(retreatWeight) });
         }
 
-        if (distance > preferredRange + 4) {
-            actions.push({
-                type: 'approach',
-                weight: profile.movement * (distance > preferredRange + 40 ? 1.25 : 1.0)
-            });
+        // JUMP: controlled approach/escape tool, not a constant action.
+        if (canJump(actor) && this._jumpCooldown <= 0) {
+            var jumpWeight = data.jump;
+            if (tooFar) jumpWeight *= 1.55;
+            if (threat) jumpWeight *= 1.2;
+            if (distance > basicReach * 1.5) jumpWeight *= 1.25;
+            choices.push({ action: 'jump', weight: clamp100(jumpWeight) });
         }
 
-        // If the fighter is substantially inside its preferred spacing,
-        // allow a controlled retreat instead of face-hugging.
-        var spacingBias = (profile.spacing - 50) * 0.5;
-        if (distance < Math.max(15, preferredRange - spacingBias) && distance > attackRange * 0.65) {
-            actions.push({ type: 'retreat', weight: profile.retreat * 0.75 + Math.max(0, spacingBias) });
+        // APPROACH: the default when no attack/skill can reach.
+        if (tooFar) {
+            var approachWeight = data.movement;
+            if (distance > preferredReach * 1.75) approachWeight *= 1.35;
+            choices.push({ action: 'approach', weight: clamp100(approachWeight) });
         }
 
-        // Jump remains intentionally conservative. It is a movement option,
-        // not an acrobatic randomizer.
-        if (!actor._duelJumping && distance <= GUARD_RANGE * 1.5) {
-            var jumpWeight = profile.jump;
-            if (opponentAttacking) jumpWeight *= 1.25;
-            if (lowHp) jumpWeight *= 1.10;
-            actions.push({ type: 'jump', weight: jumpWeight });
+        // SPACING / WAIT: prevents constant movement and creates breathing room.
+        var spacingWeight = Math.max(1, 100 - data.movement);
+        if (distance > preferredReach * 0.75 && distance < preferredReach * 1.15) {
+            spacingWeight += data.spacing * 0.5;
+        }
+        choices.push({ action: 'wait', weight: clamp100(spacingWeight) });
+
+        var action = weightedPick(choices);
+        this.execute(action, direction, distance, preferredReach);
+    };
+
+    ActorDuelAI.prototype.execute = function(action, direction, distance, preferredReach) {
+        var actor = this.actor;
+        var opponent = this.opponent;
+        var data = aiData(actor);
+
+        if (!action) return;
+
+        if (action === 'guard') {
+            clearMovement(this);
+            actor.duelStartGuard(true);
+            return;
         }
 
-        // If there is no valid attack/skill and movement is required, force
-        // the appropriate basic repositioning instead of idling in place.
-        if (!actions.length) {
-            if (distance > preferredRange + 4) {
-                actions.push({ type: 'approach', weight: 100 });
-            } else if (distance < Math.max(12, preferredRange - 10)) {
-                actions.push({ type: 'retreat', weight: profile.retreat || 10 });
-            } else {
-                actions.push({ type: 'wait', weight: 100 });
+        if (action === 'attack') {
+            clearMovement(this);
+            actor.duelStartGuard(false);
+            actor.duelStartAttack();
+            return;
+        }
+
+        if (action === 'skill') {
+            clearMovement(this);
+            actor.duelStartGuard(false);
+            var skill = bestUsableSkill(actor, distance);
+            if (skill && typeof actor.duelUseSkill === 'function') {
+                actor.duelUseSkill(skill.id);
             }
+            return;
         }
 
-        var chosen = weightedPick(actions) || { type: 'wait', weight: 1 };
-        executeDecision(ai, chosen, {
-            direction: direction,
-            distance: distance,
-            attackRange: attackRange,
-            preferredRange: preferredRange
-        });
-        logDecision(actor, chosen, distance);
+        if (action === 'jump') {
+            clearMovement(this);
+            actor.duelStartGuard(false);
+            actor.duelJump();
+            this._jumpCooldown = CFG.jumpCooldown;
+            this._airDecisionTimer = Math.max(8, Math.round(20 * (1 - data.air / 100)));
+            // Choose approach/retreat after takeoff. Horizontal movement is
+            // applied every frame by update(), so this becomes a true diagonal jump.
+            return;
+        }
 
-        ai._faiLastDecision = chosen.type;
-        ai._faiLastSkill = chosen.skillId || 0;
-        ai._faiTimer = reactionInterval(profile);
-    }
+        if (action === 'retreat') {
+            actor.duelStartGuard(false);
+            setMovement(this, -direction, CFG.movementCommit);
+            actor.duelMove(-direction);
+            return;
+        }
 
-    function installForScene(scene) {
-        if (!scene || !scene._ai || !scene._ai.actor) return;
+        if (action === 'approach') {
+            actor.duelStartGuard(false);
+            setMovement(this, direction, CFG.movementCommit);
+            actor.duelMove(direction);
+            return;
+        }
 
-        var ai = scene._ai;
-        var profile = aiProfile(ai.actor);
+        // WAIT: stop movement, but keep facing the opponent.
+        if (action === 'wait') {
+            clearMovement(this);
+            actor.duelStartGuard(false);
+        }
+    };
 
-        // Actors without <fai> keep the original Stage 1 AI untouched.
-        if (!profile.enabled) return;
-
-        ai._faiProfile = profile;
-        ai._faiTimer = 0;
-        ai._faiLastDecision = 'wait';
-        ai._faiLastSkill = 0;
-        ai._faiInstalled = true;
-
-        ai.update = function() {
-            var actor = this.actor;
-            var opponent = this.opponent;
-            if (!actor || !opponent) return;
-            if (actor._duelDead || opponent._duelDead) return;
-
-            this._faiProfile = aiProfile(actor);
-
-            if (actor._duelHitTimer > 0 || actor._duelAttackTimer > 0 || actor._duelSkillTimer > 0) {
-                return;
-            }
-
-            if (this._faiTimer > 0) {
-                this._faiTimer--;
-
-                // Keep facing and avoid freezing far away while waiting for
-                // the next formal decision window.
-                var dx = opponent._duelX - actor._duelX;
-                var dir = dx >= 0 ? 1 : -1;
-                actor._duelFacing = dir;
-                return;
-            }
-
-            decide(this);
-        };
-    }
-
-    // Scene_ActorDuel creates the original ActorDuelAI inside its private
-    // implementation. We intercept the completed creation and replace only
-    // the update method of AI-enabled actors. This keeps the core duel and
-    // MultiSkills systems intact.
+    // ---------------------------------------------------------------------
+    // Replace the original AI instance with the new engine when the scene
+    // creates the CPU fighter. Player vs Player remains untouched.
+    // ---------------------------------------------------------------------
     var _Scene_ActorDuel_createActors = Scene_ActorDuel.prototype._createActors;
     Scene_ActorDuel.prototype._createActors = function() {
         _Scene_ActorDuel_createActors.call(this);
-        installForScene(this);
+        if (this._finished) return;
+        if (this._ai && this._ai.actor) {
+            var data = aiData(this._ai.actor);
+            if (data.enabled) {
+                this._ai = new ActorDuelAI(this._actor2, this._actor1);
+            }
+        }
+    };
+
+    // ---------------------------------------------------------------------
+    // Player diagonal jump support.
+    // The base duelJump() already handles vertical physics; this wrapper
+    // remembers the held horizontal direction and the scene update keeps
+    // moving while airborne. Existing ground controls remain unchanged.
+    // ---------------------------------------------------------------------
+    var _Scene_ActorDuel_updateFight = Scene_ActorDuel.prototype._updateFight;
+    Scene_ActorDuel.prototype._updateFight = function() {
+        if (_Scene_ActorDuel_updateFight) {
+            _Scene_ActorDuel_updateFight.call(this);
+        }
+
+        var actor = this._actor1;
+        if (!actor || actor._duelDead || !actor._duelJumping) return;
+        if (actor._duelHitTimer > 0 || actor._duelAttackTimer > 0) return;
+
+        var horizontal = 0;
+        if (Input.isPressed('left')) horizontal = -1;
+        if (Input.isPressed('right')) horizontal = 1;
+        if (horizontal !== 0) {
+            actor.duelMove(horizontal);
+        }
     };
 
 })();
