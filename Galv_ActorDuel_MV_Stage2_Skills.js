@@ -4,43 +4,25 @@
  * @help
  * Carregue DEPOIS de Galv_ActorDuel_MV.js e dos plugins Stage 1.
  *
- * Esta primeira versão da Parte 2 implementa a base de skills do Galv:
+ * Tags:
  *   <fpose: x>            Pose usada pelo lutador durante a skill.
  *   <fcost: x>            Custo de stamina.
  *   <fse: sename>         SE da skill.
  *   <fp: p,s,a,t,r>       Skill de projétil:
  *                          p = linha da spritesheet FightSkills
  *                          s = velocidade
- *                          a = animation id (mantido como dado da skill)
+ *                          a = animation id (reservado)
  *                          t = duração em frames
  *                          r = alcance de contato do projétil
  *
- * Para registrar uma skill em um ator:
+ * Registro:
  *   ActorDuel add_skill 1 2 r
  *
- * Onde:
- *   1 = ID do ator
- *   2 = ID da skill
- *   r = botão/direção necessário antes do ataque.
+ * O Stage 2 usa as direções numéricas do Stage 1 diretamente:
+ *   1  = direita
+ *   -1 = esquerda
  *
- * Combos aceitos:
- *   l = esquerda / afastar do inimigo
- *   r = direita / aproximar do inimigo
- *   u = cima
- *   d = baixo
- *
- * Exemplo:
- *   ActorDuel add_skill 1 2 r
- *
- * Depois, durante o duelo, estando o P1 à esquerda:
- *   Direita -> Ataque
- *
- * O mesmo comando de direção é convertido automaticamente para o lado
- * relativo ao inimigo quando o lutador muda de lado.
- *
- * A primeira implementação de projétil usa a spritesheet FightSkills quando
- * disponível. Se ela não existir, um marcador procedural é desenhado para
- * permitir testar a lógica sem asset adicional.
+ * O arquivo FightSkills.png deve ficar em img/battlers/.
  */
 
 (function() {
@@ -59,9 +41,6 @@
         comboWindow: Number(params['Combo Window'] || 20)
     };
 
-    // ---------------------------------------------------------------------
-    // RPG::Skill - dados das skills de duelo
-    // ---------------------------------------------------------------------
     function noteValue(note, regex, fallback) {
         var m = String(note || '').match(regex);
         return m ? m[1].trim() : fallback;
@@ -96,9 +75,6 @@
         };
     };
 
-    // ---------------------------------------------------------------------
-    // Game_Actor - skill registry / combo input
-    // ---------------------------------------------------------------------
     var _Game_Actor_duelReset = Game_Actor.prototype.duelReset;
     Game_Actor.prototype.duelReset = function() {
         _Game_Actor_duelReset.call(this);
@@ -177,20 +153,13 @@
 
         var se = skill.duelSe();
         if (se) {
-            AudioManager.playSe({
-                name: se,
-                volume: 90,
-                pitch: 100,
-                pan: 0
-            });
+            AudioManager.playSe({name: se, volume: 90, pitch: 100, pan: 0});
         }
 
         var projectile = skill.duelProjectile();
         if (projectile) {
             this.duelCreateProjectile(skill, projectile);
         } else {
-            // Stage 2 foundation: non-projectile skills will be connected to
-            // the existing melee hit pipeline in the next incremental step.
             this._duelAttackTimer = 22;
         }
 
@@ -199,15 +168,13 @@
 
     Game_Actor.prototype.duelCreateProjectile = function(skill, data) {
         this._duelProjectiles = this._duelProjectiles || [];
-        var projectile = new ActorDuelProjectile(this, skill, data);
-        this._duelProjectiles.push(projectile);
+        this._duelProjectiles.push(new ActorDuelProjectile(this, skill, data));
     };
 
     Game_Actor.prototype.duelUpdateProjectiles = function() {
         this._duelProjectiles = this._duelProjectiles || [];
         for (var i = 0; i < this._duelProjectiles.length; i++) {
-            var p = this._duelProjectiles[i];
-            if (p) p.update();
+            if (this._duelProjectiles[i]) this._duelProjectiles[i].update();
         }
         this._duelProjectiles = this._duelProjectiles.filter(function(p) {
             if (!p || p.finished()) {
@@ -226,7 +193,6 @@
         return $gameActors.actor(otherId);
     };
 
-    // Keep the Stage 1 update loop intact and extend it with Stage 2 state.
     var _Game_Actor_duelUpdateStamina = Game_Actor.prototype.duelUpdateStamina;
     Game_Actor.prototype.duelUpdateStamina = function() {
         _Game_Actor_duelUpdateStamina.call(this);
@@ -235,8 +201,6 @@
         this.duelUpdateProjectiles();
     };
 
-    // A projectile/skill must also be considered busy so movement cannot
-    // interrupt it.
     var _Game_Actor_duelIsBusy = Game_Actor.prototype.duelIsBusy;
     Game_Actor.prototype.duelIsBusy = function() {
         return _Game_Actor_duelIsBusy.call(this) || this._duelSkillTimer > 0;
@@ -247,9 +211,6 @@
         return _Game_Actor_duelCanMove.call(this) && this._duelSkillTimer <= 0;
     };
 
-    // ---------------------------------------------------------------------
-    // Projectile sprite
-    // ---------------------------------------------------------------------
     function ActorDuelProjectile(owner, skill, data) {
         this.initialize.apply(this, arguments);
     }
@@ -267,9 +228,9 @@
         this._hit = false;
         this._pattern = 0;
         this._animTimer = 0;
-        this._speed = data.speed || CFG2.defaultProjectileSpeed;
-        this._lifetime = data.lifetime || CFG2.defaultProjectileLifetime;
-        this._reach = data.reach || CFG2.defaultProjectileReach;
+        this._speed = Number(data.speed) || CFG2.defaultProjectileSpeed;
+        this._lifetime = Number(data.lifetime) || CFG2.defaultProjectileLifetime;
+        this._reach = Number(data.reach) || CFG2.defaultProjectileReach;
         this.x = owner._duelX;
         this.y = owner._duelY - 60;
         this.anchor.x = 0.5;
@@ -277,52 +238,57 @@
         this._direction = this._target && this._target._duelX >= owner._duelX ? 1 : -1;
         this.scale.x = this._direction;
         this._loadBitmap();
-        this._buildFallback();
     };
 
     ActorDuelProjectile.prototype._loadBitmap = function() {
         this._bitmap = ImageManager.loadBitmap('img/battlers/', CFG2.projectileImage, 0, true);
         this._bitmap.addLoadListener(this._onBitmapLoaded.bind(this));
+        this._buildFallback();
     };
 
     ActorDuelProjectile.prototype._onBitmapLoaded = function() {
-        if (!this._bitmap.isReady()) return;
+        if (!this._bitmap || !this._bitmap.isReady()) return;
         this.bitmap = this._bitmap;
-        this._cw = this.bitmap.width / CFG2.projectileCols;
-        this._ch = this.bitmap.height / CFG2.projectileRows;
-        this.ox = this._cw / 2;
-        this.oy = this._ch;
+        this._cw = Math.floor(this.bitmap.width / CFG2.projectileCols);
+        this._ch = Math.floor(this.bitmap.height / CFG2.projectileRows);
+        if (this._cw <= 0 || this._ch <= 0) return;
         this._useSheet = true;
+        this._setSheetFrame();
     };
 
     ActorDuelProjectile.prototype._buildFallback = function() {
-        this._fallback = new Bitmap(56, 36);
-        this._fallback.fillRect(8, 8, 40, 20);
-        this._fallback.fillRect(16, 4, 24, 28);
+        this._fallback = new Bitmap(64, 40);
+        this._fallback.fillRect(8, 8, 48, 24);
+        this._fallback.fillRect(20, 2, 24, 36);
         this.bitmap = this._fallback;
-        this.ox = 28;
-        this.oy = 30;
         this._useSheet = false;
+        this.anchor.x = 0.5;
+        this.anchor.y = 0.5;
+    };
+
+    ActorDuelProjectile.prototype._setSheetFrame = function() {
+        if (!this._useSheet || !this.bitmap) return;
+        var pose = Math.max(0, Math.min(CFG2.projectileRows - 1, Number(this._data.pose || 0)));
+        this.setFrame(this._pattern * this._cw, pose * this._ch, this._cw, this._ch);
+        this.anchor.x = 0.5;
+        this.anchor.y = 1;
     };
 
     ActorDuelProjectile.prototype.update = function() {
+        Sprite.prototype.update.call(this);
         if (this.finished()) return;
 
         this._life++;
         this._animTimer++;
 
-        if (this._useSheet && this.bitmap) {
-            if (this._animTimer >= 7) {
-                this._animTimer = 0;
-                this._pattern = (this._pattern + 1) % CFG2.projectileCols;
-            }
-            var sx = this._pattern * this._cw;
-            var sy = Number(this._data.pose || 0) * this._ch;
-            this.setFrame(sx, sy, this._cw, this._ch);
+        if (this._useSheet && this.bitmap && this._animTimer >= 7) {
+            this._animTimer = 0;
+            this._pattern = (this._pattern + 1) % CFG2.projectileCols;
+            this._setSheetFrame();
         }
 
         this.x += this._speed * this._direction;
-        this.opacity = Math.min(255, this.opacity + 24);
+        this.opacity = 255;
 
         if (this._target && !this._target._duelDead) {
             var dx = Math.abs(this._target._duelX - this.x);
@@ -342,7 +308,9 @@
         var damage = action.makeDamageValue(this._target, false);
 
         if (this._target._duelGuarding) {
-            damage = Math.floor(damage * (Number(PluginManager.parameters('Galv_ActorDuel_MV')['Guard Damage Rate'] || 0.25)));
+            var mainParams = PluginManager.parameters('Galv_ActorDuel_MV');
+            var guardRate = Number(mainParams['Guard Damage Rate'] || 0.25);
+            damage = Math.floor(damage * guardRate);
         }
 
         if (damage < 0) damage = 0;
@@ -358,13 +326,9 @@
         this.bitmap = null;
     };
 
-    // ---------------------------------------------------------------------
-    // Plugin command: add_skill
-    // ---------------------------------------------------------------------
     var _Game_Interpreter_pluginCommand = Game_Interpreter.prototype.pluginCommand;
     Game_Interpreter.prototype.pluginCommand = function(command, args) {
         _Game_Interpreter_pluginCommand.call(this, command, args);
-
         if (String(command).toLowerCase() !== 'actorduel') return;
         if (!args || String(args[0]).toLowerCase() !== 'add_skill') return;
 
@@ -373,27 +337,9 @@
         var buttons = args.slice(3).map(function(value) {
             return String(value).toLowerCase();
         });
-
         var actor = $gameActors.actor(actorId);
-        if (actor && skillId > 0) {
-            actor.duelAddSkill(skillId, buttons);
-        }
+        if (actor && skillId > 0) actor.duelAddSkill(skillId, buttons);
     };
-
-    // ---------------------------------------------------------------------
-    // Input hooks for relative combo directions.
-    // ---------------------------------------------------------------------
-    function relativeDirection(actor, rawDirection) {
-        var target = actor.duelTarget();
-        if (!target) return rawDirection;
-
-        var toward = actor._duelX < target._duelX ? 'r' : 'l';
-        var away = toward === 'r' ? 'l' : 'r';
-
-        if (rawDirection === 'left') return away;
-        if (rawDirection === 'right') return toward;
-        return rawDirection;
-    }
 
     function tryActorSkill(actor) {
         var skillId = actor.duelFindSkill();
@@ -405,53 +351,30 @@
         return false;
     }
 
-    function stage2MoveHook(actor, direction) {
-        if (!actor || actor._duelDead) return;
-        if (direction === 'left' || direction === 'right') {
-            actor.duelAddComboInput(relativeDirection(actor, direction));
-        } else {
-            actor.duelAddComboInput(direction === 'up' ? 'u' : 'd');
-        }
-    }
-
-    // The Stage 1 scene owns movement. Wrap duelMove so every actual movement
-    // input also enters the Stage 2 combo buffer, without replacing Stage 1.
+    // IMPORTANT: Stage 1 sends numeric movement directions.
+    // Capture them here once. Stage2_Skills_Fix is intentionally left as a
+    // compatibility no-op so it can remain enabled without duplicating input.
     var _Game_Actor_duelMove = Game_Actor.prototype.duelMove;
     Game_Actor.prototype.duelMove = function(direction) {
-        if (direction !== 'none' && this.duelCanMove()) {
-            stage2MoveHook(this, direction);
+        if (direction !== 0 && this.duelCanMove && this.duelCanMove() && this.duelAddComboInput) {
+            var target = this.duelTarget ? this.duelTarget() : null;
+            var toward = target && this._duelX < target._duelX ? 'r' : 'l';
+            var away = toward === 'r' ? 'l' : 'r';
+            this.duelAddComboInput(direction > 0 ? toward : away);
         }
         _Game_Actor_duelMove.call(this, direction);
     };
 
-    // Attack input is handled by Stage 1 through duelStartAttack. We expose a
-    // helper for the Stage 2 scene patch below.
     Game_Actor.prototype.duelTryStage2Skill = function() {
         return tryActorSkill(this);
     };
 
-    // ---------------------------------------------------------------------
-    // Scene input wrapper
-    // ---------------------------------------------------------------------
-    var _Scene_ActorDuel_updateFighter1 = Scene_ActorDuel.prototype._updateFighter1;
-    if (_Scene_ActorDuel_updateFighter1) {
-        Scene_ActorDuel.prototype._updateFighter1 = function() {
-            _Scene_ActorDuel_updateFighter1.call(this);
-        };
-    }
-
-    // Current Stage 1 scene reads the attack key directly. Wrap the actual
-    // duelStartAttack method so a registered combo skill has priority over the
-    // normal attack, while preserving all existing Stage 1 behavior.
     var _Game_Actor_duelStartAttack = Game_Actor.prototype.duelStartAttack;
     Game_Actor.prototype.duelStartAttack = function() {
         if (this.duelTryStage2Skill()) return;
         _Game_Actor_duelStartAttack.call(this);
     };
 
-    // ---------------------------------------------------------------------
-    // Spriteset integration
-    // ---------------------------------------------------------------------
     var _Scene_ActorDuel_createSprites = Scene_ActorDuel.prototype._createSprites;
     Scene_ActorDuel.prototype._createSprites = function() {
         _Scene_ActorDuel_createSprites.call(this);
@@ -476,18 +399,13 @@
         actors.forEach(function(actor) {
             if (!actor || !actor._duelProjectiles) return;
             actor._duelProjectiles.forEach(function(projectile) {
-                if (projectile && !projectile.parent) {
-                    this._stage2ProjectileLayer.addChild(projectile);
-                }
+                if (projectile && !projectile.parent) this._stage2ProjectileLayer.addChild(projectile);
                 if (projectile) sprites.push(projectile);
             }, this);
         }, this);
 
-        var children = this._stage2ProjectileLayer.children.slice();
-        children.forEach(function(child) {
-            if (sprites.indexOf(child) < 0) {
-                this._stage2ProjectileLayer.removeChild(child);
-            }
+        this._stage2ProjectileLayer.children.slice().forEach(function(child) {
+            if (sprites.indexOf(child) < 0) this._stage2ProjectileLayer.removeChild(child);
         }, this);
     };
 
