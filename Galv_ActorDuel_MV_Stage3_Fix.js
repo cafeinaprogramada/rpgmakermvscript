@@ -1,20 +1,15 @@
 /*:
- * @plugindesc Galv Actor Duel MV - Stage 3 Compatibility Fix v1.0
+ * @plugindesc Galv Actor Duel MV - Stage 3 Compatibility Fix v1.1
  * @author OpenAI / Lucas
  *
  * @help
  * Load AFTER Galv_ActorDuel_MV_Stage3_MatchFlow.js.
  *
  * Fixes:
- * 1. Stage 3 cinematic camera referenced the core plugin's private CFG
- *    object. CFG is not visible outside Galv_ActorDuel_MV.js, causing
- *    "ReferenceError: CFG is not defined" during the KO cinematic.
- *
- * 2. The Fighting AI could start a basic attack slightly outside the
- *    actual basic attack range (its decision window was larger than the
- *    core hit range). This could make it swing repeatedly without closing
- *    the remaining distance. The fix cancels an AI attack when it is truly
- *    out of range and makes the AI approach instead.
+ * 1. Stage 3 cinematic camera must not access the core plugin's private CFG.
+ * 2. Fighting AI must not launch basic attacks outside the real attack range.
+ * 3. Cinematic camera now moves/scales the battleback together with the
+ *    fighters, keeping the stage visually attached to the camera movement.
  */
 (function() {
     'use strict';
@@ -22,7 +17,31 @@
     var GROUND_Y = 310;
 
     // ---------------------------------------------------------------------
-    // Fix 1: Stage 3 camera must not access the core plugin's private CFG.
+    // Fix 3 support: remember the original battleback transform.
+    // ---------------------------------------------------------------------
+    if (typeof Scene_ActorDuel !== 'undefined') {
+        var _stage3CreateCinematicLayer =
+            Scene_ActorDuel.prototype._stage3CreateCinematicLayer;
+
+        Scene_ActorDuel.prototype._stage3CreateCinematicLayer = function() {
+            if (_stage3CreateCinematicLayer) {
+                _stage3CreateCinematicLayer.call(this);
+            }
+
+            this._stage3Back1BaseX = this._backSprite1 ? this._backSprite1.x : 0;
+            this._stage3Back1BaseY = this._backSprite1 ? this._backSprite1.y : 0;
+            this._stage3Back1ScaleX = this._backSprite1 ? this._backSprite1.scale.x : 1;
+            this._stage3Back1ScaleY = this._backSprite1 ? this._backSprite1.scale.y : 1;
+
+            this._stage3Back2BaseX = this._backSprite2 ? this._backSprite2.x : 0;
+            this._stage3Back2BaseY = this._backSprite2 ? this._backSprite2.y : 0;
+            this._stage3Back2ScaleX = this._backSprite2 ? this._backSprite2.scale.x : 1;
+            this._stage3Back2ScaleY = this._backSprite2 ? this._backSprite2.scale.y : 1;
+        };
+    }
+
+    // ---------------------------------------------------------------------
+    // Fix 1 + 3: cinematic camera for fighters, shadows and battleback.
     // ---------------------------------------------------------------------
     if (typeof Scene_ActorDuel !== 'undefined') {
         Scene_ActorDuel.prototype._stage3ApplyCamera = function() {
@@ -35,6 +54,7 @@
 
             var cx = (this._actor1._duelX + this._actor2._duelX) * 0.5;
             var centerX = Graphics.width * 0.5;
+            var centerY = Graphics.height * 0.5;
             var shift = (centerX - cx) * (zoom - 1);
 
             this._sprite1.x = Math.round(
@@ -83,6 +103,56 @@
                 this._shadow1.y = shadowY;
                 this._shadow2.y = shadowY;
             }
+
+            // Move the two battleback layers as part of the same virtual
+            // camera. The background is transformed around the screen center
+            // instead of simply being shifted, so the zoom feels coherent.
+            this._stage3ApplyBackCamera(
+                this._backSprite1,
+                this._stage3Back1BaseX,
+                this._stage3Back1BaseY,
+                this._stage3Back1ScaleX,
+                this._stage3Back1ScaleY,
+                zoom,
+                centerX,
+                centerY,
+                shakeX,
+                shakeY
+            );
+
+            this._stage3ApplyBackCamera(
+                this._backSprite2,
+                this._stage3Back2BaseX,
+                this._stage3Back2BaseY,
+                this._stage3Back2ScaleX,
+                this._stage3Back2ScaleY,
+                zoom,
+                centerX,
+                centerY,
+                shakeX,
+                shakeY
+            );
+        };
+
+        Scene_ActorDuel.prototype._stage3ApplyBackCamera = function(
+            sprite, baseX, baseY, baseScaleX, baseScaleY,
+            zoom, centerX, centerY, shakeX, shakeY
+        ) {
+            if (!sprite) return;
+
+            baseX = Number(baseX || 0);
+            baseY = Number(baseY || 0);
+            baseScaleX = Number(baseScaleX || 1);
+            baseScaleY = Number(baseScaleY || 1);
+
+            sprite.x = Math.round(
+                centerX + (baseX - centerX) * zoom + shakeX
+            );
+            sprite.y = Math.round(
+                centerY + (baseY - centerY) * zoom + shakeY
+            );
+            sprite.scale.x = baseScaleX * zoom;
+            sprite.scale.y = baseScaleY * zoom;
         };
     }
 
@@ -103,9 +173,6 @@
         var opponent = this._ai.opponent;
         if (actor._duelDead || opponent._duelDead) return;
 
-        // The actual core attack uses duelData().range. The AI's old
-        // decision window allowed +20 pixels, which is useful for deciding
-        // when to approach but is too large for actually launching a hit.
         var duelData = actor.duelData ? actor.duelData() : null;
         var realRange = Number(duelData && duelData.range || 45);
         var distance = Math.abs(actor._duelX - opponent._duelX);
