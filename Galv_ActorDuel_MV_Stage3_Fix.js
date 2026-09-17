@@ -1,5 +1,5 @@
 /*:
- * @plugindesc Galv Actor Duel MV - Stage 3 Compatibility Fix v1.1
+ * @plugindesc Galv Actor Duel MV - Stage 3 Compatibility Fix v1.2
  * @author OpenAI / Lucas
  *
  * @help
@@ -8,13 +8,15 @@
  * Fixes:
  * 1. Stage 3 cinematic camera must not access the core plugin's private CFG.
  * 2. Fighting AI must not launch basic attacks outside the real attack range.
- * 3. Cinematic camera now moves/scales the battleback together with the
- *    fighters, keeping the stage visually attached to the camera movement.
+ * 3. Cinematic camera moves/scales the battleback together with the fighters.
+ * 4. Cinematic camera preserves the core shadow's +5px ground offset so the
+ *    shadow stays visually attached to the fighter's feet during zoom/shake.
  */
 (function() {
     'use strict';
 
     var GROUND_Y = 310;
+    var SHADOW_GROUND_OFFSET = 5;
 
     // ---------------------------------------------------------------------
     // Fix 3 support: remember the original battleback transform.
@@ -41,7 +43,7 @@
     }
 
     // ---------------------------------------------------------------------
-    // Fix 1 + 3: cinematic camera for fighters, shadows and battleback.
+    // Fix 1 + 3 + 4: cinematic camera for fighters, shadows and battleback.
     // ---------------------------------------------------------------------
     if (typeof Scene_ActorDuel !== 'undefined') {
         Scene_ActorDuel.prototype._stage3ApplyCamera = function() {
@@ -96,8 +98,12 @@
                     this._actor2._duelX * zoom + shift + shakeX
                 );
 
+                // The core shadow normally sits at GROUND_Y + 5. The previous
+                // cinematic implementation used GROUND_Y directly, which
+                // moved the shadow upward relative to the fighter during zoom.
+                var shadowGroundY = GROUND_Y + SHADOW_GROUND_OFFSET;
                 var shadowY = Math.round(
-                    GROUND_Y * zoom +
+                    shadowGroundY * zoom +
                     (Graphics.height * (1 - zoom)) + shakeY
                 );
                 this._shadow1.y = shadowY;
