@@ -1,5 +1,5 @@
 /*:
- * @plugindesc Galv Actor Duel MV - Stage 3 Compatibility Fix v1.2
+ * @plugindesc Galv Actor Duel MV - Stage 3 Compatibility Fix v1.3
  * @author OpenAI / Lucas
  *
  * @help
@@ -9,13 +9,23 @@
  * 1. Stage 3 cinematic camera must not access the core plugin's private CFG.
  * 2. Fighting AI must not launch basic attacks outside the real attack range.
  * 3. Cinematic camera moves/scales the battleback together with the fighters.
- * 4. Cinematic camera preserves the core shadow's +5px ground offset so the
- *    shadow stays visually attached to the fighter's feet during zoom/shake.
+ * 4. Cinematic camera preserves the core shadow's ground offset.
+ * 5. Cinematic camera now reads the actual Ground Y configured in the core
+ *    plugin instead of using a hardcoded 310px value.
+ *
+ * IMPORTANT:
+ * The core plugin's CFG is private, so this module reads the public Plugin
+ * Manager parameter directly. This keeps the cinematic camera synchronized
+ * with any custom Ground Y value used by the project.
  */
 (function() {
     'use strict';
 
-    var GROUND_Y = 310;
+    // ---------------------------------------------------------------------
+    // Read the public core parameter instead of duplicating/hardcoding it.
+    // ---------------------------------------------------------------------
+    var CORE_PARAMS = PluginManager.parameters('Galv_ActorDuel_MV');
+    var GROUND_Y = Number(CORE_PARAMS['Ground Y'] || 310);
     var SHADOW_GROUND_OFFSET = 5;
 
     // ---------------------------------------------------------------------
@@ -43,7 +53,7 @@
     }
 
     // ---------------------------------------------------------------------
-    // Fix 1 + 3 + 4: cinematic camera for fighters, shadows and battleback.
+    // Fix 1 + 3 + 4 + 5: cinematic camera for fighters, shadows and battleback.
     // ---------------------------------------------------------------------
     if (typeof Scene_ActorDuel !== 'undefined') {
         Scene_ActorDuel.prototype._stage3ApplyCamera = function() {
@@ -98,9 +108,9 @@
                     this._actor2._duelX * zoom + shift + shakeX
                 );
 
-                // The core shadow normally sits at GROUND_Y + 5. The previous
-                // cinematic implementation used GROUND_Y directly, which
-                // moved the shadow upward relative to the fighter during zoom.
+                // The core shadow sits at Ground Y + 5. Use the same Ground Y
+                // configured by the core plugin, so custom arenas remain
+                // aligned with the cinematic camera.
                 var shadowGroundY = GROUND_Y + SHADOW_GROUND_OFFSET;
                 var shadowY = Math.round(
                     shadowGroundY * zoom +
@@ -108,6 +118,17 @@
                 );
                 this._shadow1.y = shadowY;
                 this._shadow2.y = shadowY;
+
+                // Keep the shadow's current airborne/ground scale, but apply
+                // the same cinematic zoom factor to it.
+                var shadowScaleX1 = Number(this._shadow1.scale.x || 1);
+                var shadowScaleY1 = Number(this._shadow1.scale.y || 1);
+                var shadowScaleX2 = Number(this._shadow2.scale.x || 1);
+                var shadowScaleY2 = Number(this._shadow2.scale.y || 1);
+                this._shadow1.scale.x = shadowScaleX1 * zoom;
+                this._shadow1.scale.y = shadowScaleY1 * zoom;
+                this._shadow2.scale.x = shadowScaleX2 * zoom;
+                this._shadow2.scale.y = shadowScaleY2 * zoom;
             }
 
             // Move the two battleback layers as part of the same virtual
